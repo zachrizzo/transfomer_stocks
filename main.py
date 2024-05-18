@@ -8,14 +8,15 @@ import os
 import numpy as np
 import requests
 from textblob import TextBlob
-from datetime import datetime
+from datetime import datetime, timedelta
 import dotenv
 
 # Load environment variables
 dotenv.load_dotenv()
 
-# Set the API key directly for testing purposes
-fmp_api_key = os.getenv('NEWS_API_KEY')
+# Set the API keys
+alpaca_api_key_id = os.getenv('ALPACA_PAPER_KEY_ID')
+alpaca_api_secret_key = os.getenv('ALPACA_PAPER_SECRET')
 
 # Set page title
 st.set_page_config(page_title="Stock Prediction with News")
@@ -26,7 +27,7 @@ st.write("This app predicts stock prices using a PyTorch Transformer model and n
 
 # Initialize the stock symbol variable
 if 'stockSymbol' not in st.session_state:
-    st.session_state['stockSymbol'] = 'NVDA'
+    st.session_state['stockSymbol'] = 'TSLA'
 
 # Check if MPS is available and use it; otherwise use CPU
 if torch.backends.mps.is_available():
@@ -35,16 +36,33 @@ elif torch.cuda.is_available():
     device = torch.device("cuda")
 else:
     device = torch.device("cpu")
-print(f"Using device: {device}")
 
-stockSymbol = st.text_input("Enter Stock Symbol", st.session_state['stockSymbol'])
+st.write(f"Using device: {device}")
+
+col1, col2, col3 = st.columns([1, 1, 1])
+with col1:
+    stockSymbol = st.text_input("Enter Stock Symbol", st.session_state['stockSymbol'])
+
+with col2:
+
+    start_date = st.date_input("Start Date", datetime(2018, 1, 1))
+
+with col3:
+    end_date = st.date_input("End Date", datetime(2024, 1, 1))
+
 use_volume = st.checkbox("Use Volume Data")
 use_news = st.checkbox("Use News Data")
 
-def fetch_news(stockSymbol, page=0, limit=50):
-    url = f"https://financialmodelingprep.com/api/v3/stock_news?page={page}&tickers={stockSymbol}&limit={limit}&apikey={fmp_api_key}"
+@st.cache_resource
+def fetch_news_batch(stockSymbol, start_date, end_date):
+    url = f"https://data.alpaca.markets/v1beta1/news?start={start_date}&end={end_date}&symbols={stockSymbol}&sort=desc&limit=50"
+    headers = {
+        "accept": "application/json",
+        "APCA-API-KEY-ID": alpaca_api_key_id,
+        "APCA-API-SECRET-KEY": alpaca_api_secret_key
+    }
     try:
-        response = requests.get(url)
+        response = requests.get(url, headers=headers)
         response.raise_for_status()
         news_data = response.json()
     except requests.exceptions.HTTPError as http_err:
@@ -58,22 +76,38 @@ def fetch_news(stockSymbol, page=0, limit=50):
         return pd.DataFrame()
 
     articles = []
-    for item in news_data:
-        if item['symbol'] == stockSymbol:
-            articles.append({
-                'title': item['title'],
-                'link': item['url'],
-                'publishedAt': item['publishedDate'],
-                'sentiment': TextBlob(item['title']).sentiment.polarity
-            })
+    for item in news_data.get('news', []):
+        articles.append({
+            'title': item['headline'],
+            'link': item['url'],
+            'publishedAt': item['created_at'],
+            'sentiment': TextBlob(item['headline']).sentiment.polarity
+        })
     news_df = pd.DataFrame(articles)
     if not news_df.empty:
         news_df['publishedAt'] = pd.to_datetime(news_df['publishedAt']).dt.date
     return news_df
 
-def load_data(stockSymbol):
-    stock_data = yf.download(stockSymbol, start='2018-01-01', end='2023-01-01')
-    st.write(stock_data.head())
+@st.cache_resource
+def fetch_all_news(stockSymbol, stock_data_dates):
+    all_news = pd.DataFrame()
+    stock_data_dates = pd.to_datetime(stock_data_dates).date
+    unique_dates = list(stock_data_dates)
+    print(stock_data_dates)
+
+    for i in range(0, len(unique_dates), 50):
+        start_date = unique_dates[i]
+        end_date = unique_dates[min(i + 49, len(unique_dates) - 1)]
+        batch_news = fetch_news_batch(stockSymbol, start_date, end_date)
+        all_news = pd.concat([all_news, batch_news])
+
+
+    return all_news
+
+@st.cache_resource
+def load_data(stockSymbol, start_date, end_date):
+    stock_data = yf.download(stockSymbol, start=start_date, end=end_date)
+    st.write(stock_data)
     print(stock_data.head())
     scaler = MinMaxScaler(feature_range=(0, 1))
     stock_data['Normalized_Close'] = scaler.fit_transform(stock_data['Close'].values.reshape(-1, 1))
@@ -102,6 +136,11 @@ def preprocess_data(stock_data, news_data, use_volume, use_news, scaler, seq_len
         news_data = news_data.set_index('publishedAt')
         stock_data = stock_data.join(news_data['sentiment'], how='left')
         stock_data['sentiment'] = stock_data['sentiment'].fillna(0)
+
+        # Ensure the lengths match
+        if len(stock_data) != len(data_combined):
+            stock_data = stock_data.iloc[-len(data_combined):]
+
         data_combined = np.column_stack((data_combined, stock_data['sentiment'].values))
 
     X, y = create_sequences(data_combined, seq_length)
@@ -187,13 +226,14 @@ def train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_l
     return model
 
 # Load and prepare the data
-stock_data, scaler = load_data(stockSymbol)
+stock_data, scaler = load_data(stockSymbol, start_date, end_date)
 train_size = int(len(stock_data) * 0.8)
 train_data = stock_data[:train_size]
 test_data = stock_data[train_size:]
 
 # Fetch and prepare news data
-news_data = fetch_news(stockSymbol) if use_news else pd.DataFrame()
+dates = stock_data.index.date
+news_data = fetch_all_news(stockSymbol, dates) if use_news else pd.DataFrame()
 
 # Ensure the input data is properly formatted
 seq_length = 20
@@ -217,11 +257,11 @@ learning_rate = st.sidebar.slider("Learning Rate", min_value=0.0001, max_value=0
 # Check if the stock symbol has changed
 if stockSymbol != st.session_state['stockSymbol']:
     st.session_state['stockSymbol'] = stockSymbol
-    stock_data, scaler = load_data(stockSymbol)
+    stock_data, scaler = load_data(stockSymbol, start_date, end_date)
     train_size = int(len(stock_data) * 0.8)
     train_data = stock_data[:train_size]
     test_data = stock_data[train_size:]
-    news_data = fetch_news(stockSymbol) if use_news else pd.DataFrame()
+    news_data = fetch_all_news(stockSymbol, dates) if use_news else pd.DataFrame()
     train_X, train_y = preprocess_data(train_data, news_data, use_volume, use_news, scaler, seq_length)
     test_X, test_y = preprocess_data(test_data, news_data, use_volume, use_news, scaler, seq_length)
     model = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
@@ -231,9 +271,9 @@ if stockSymbol != st.session_state['stockSymbol']:
 model = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
 
 # Save the trained model
-model_dir = '/Users/zachrizzo/programing/aI_assistant/stocks/models'
+model_dir = 'models'
 model_filename = 'stock_prediction_model.pt'
-model_path = os.path.join(model_dir, model_filename)
+model_path = os.path.join(model_dir, model_filename + datetime.now().strftime("%Y%m%d%H%M%S"))
 torch.save(model.state_dict(), model_path)
 
 if st.button("Rerun Training"):
@@ -244,14 +284,36 @@ if st.button("Rerun Training"):
 
 # Fetch and display news headlines for the stock symbol
 if use_news:
-    st.subheader("Latest News Headlines")
-    news_data = fetch_news(stockSymbol)
-    for _, row in news_data.iterrows():
-        st.write(f"**{row['title']}**")
-        st.write(f"[Read more]({row['link']})")
-        st.write(f"Published at: {row['publishedAt']}")
-        st.write(f"Sentiment: {row['sentiment']}")
-        st.write("---")
+
+        st.subheader("Latest News Headlines")
+        news_data = fetch_all_news(stockSymbol, dates)
+
+        st.write(f"Fetched {len(news_data)} news articles for {stockSymbol} from {dates.min()} to {dates.max()}")
+
+
+        with st.expander("Show News Data"):
+            st.write(news_data)
+        with st.expander("Show News Data"):
+            news_container = st.container()
+            with news_container:
+                for _, row in news_data.iterrows():
+                    st.write(f"**{row['title']}**")
+                    st.write(f"[Read more]({row['link']})")
+                    st.write(f"Published at: {row['publishedAt']}")
+                    st.write(f"Sentiment: {row['sentiment']}")
+                    st.write("---")
+
+            st.markdown(
+                """
+                <style>
+                .streamlit-expanderContent {
+                    max-height: 300px;
+                    overflow-y: auto;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
 
 # Calculate and display the number of neurons
 num_neurons = count_parameters(model)
