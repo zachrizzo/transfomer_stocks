@@ -6,32 +6,78 @@ import yfinance as yf
 from sklearn.preprocessing import MinMaxScaler
 import os
 import numpy as np
+import requests
+from textblob import TextBlob
+from datetime import datetime
+import dotenv
+
+# Load environment variables
+dotenv.load_dotenv()
+
+# Set the API key directly for testing purposes
+fmp_api_key = os.getenv('NEWS_API_KEY')
 
 # Set page title
-st.set_page_config(page_title="Stock Prediction")
+st.set_page_config(page_title="Stock Prediction with News")
 
 # Add a title and description
-st.title("Stock Prediction using Transformer Model")
-st.write("This app predicts stock prices using a PyTorch Transformer model.")
+st.title("Stock Prediction using Transformer Model with News")
+st.write("This app predicts stock prices using a PyTorch Transformer model and news sentiment analysis.")
 
 # Initialize the stock symbol variable
 if 'stockSymbol' not in st.session_state:
     st.session_state['stockSymbol'] = 'NVDA'
 
 # Check if MPS is available and use it; otherwise use CPU
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+if torch.backends.mps.is_available():
+    device = torch.device("mps")
+elif torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
 print(f"Using device: {device}")
 
 stockSymbol = st.text_input("Enter Stock Symbol", st.session_state['stockSymbol'])
 use_volume = st.checkbox("Use Volume Data")
+use_news = st.checkbox("Use News Data")
+
+def fetch_news(stockSymbol, page=0, limit=50):
+    url = f"https://financialmodelingprep.com/api/v3/stock_news?page={page}&tickers={stockSymbol}&limit={limit}&apikey={fmp_api_key}"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        news_data = response.json()
+    except requests.exceptions.HTTPError as http_err:
+        st.error(f"HTTP error occurred: {http_err}")
+        return pd.DataFrame()
+    except requests.exceptions.RequestException as err:
+        st.error(f"Error fetching news: {err}")
+        return pd.DataFrame()
+    except ValueError:
+        st.error("Error parsing the JSON response")
+        return pd.DataFrame()
+
+    articles = []
+    for item in news_data:
+        if item['symbol'] == stockSymbol:
+            articles.append({
+                'title': item['title'],
+                'link': item['url'],
+                'publishedAt': item['publishedDate'],
+                'sentiment': TextBlob(item['title']).sentiment.polarity
+            })
+    news_df = pd.DataFrame(articles)
+    if not news_df.empty:
+        news_df['publishedAt'] = pd.to_datetime(news_df['publishedAt']).dt.date
+    return news_df
 
 def load_data(stockSymbol):
-    tesla_data = yf.download(stockSymbol, start='2018-01-01', end='2023-01-01')
-    st.write(tesla_data.head())
-    print(tesla_data.head())
+    stock_data = yf.download(stockSymbol, start='2018-01-01', end='2023-01-01')
+    st.write(stock_data.head())
+    print(stock_data.head())
     scaler = MinMaxScaler(feature_range=(0, 1))
-    tesla_data['Normalized_Close'] = scaler.fit_transform(tesla_data['Close'].values.reshape(-1, 1))
-    return tesla_data, scaler
+    stock_data['Normalized_Close'] = scaler.fit_transform(stock_data['Close'].values.reshape(-1, 1))
+    return stock_data, scaler
 
 def create_sequences(data, seq_length):
     xs, ys = [], []
@@ -45,12 +91,18 @@ def create_sequences(data, seq_length):
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def preprocess_data(data, use_volume, scaler, seq_length):
+def preprocess_data(stock_data, news_data, use_volume, use_news, scaler, seq_length):
     if use_volume:
-        data['Normalized_Volume'] = scaler.fit_transform(data['Volume'].values.reshape(-1, 1))
-        data_combined = np.column_stack((data['Normalized_Close'].values, data['Normalized_Volume'].values))
+        stock_data['Normalized_Volume'] = scaler.fit_transform(stock_data['Volume'].values.reshape(-1, 1))
+        data_combined = np.column_stack((stock_data['Normalized_Close'].values, stock_data['Normalized_Volume'].values))
     else:
-        data_combined = data['Normalized_Close'].values.reshape(-1, 1)
+        data_combined = stock_data['Normalized_Close'].values.reshape(-1, 1)
+
+    if use_news and not news_data.empty:
+        news_data = news_data.set_index('publishedAt')
+        stock_data = stock_data.join(news_data['sentiment'], how='left')
+        stock_data['sentiment'] = stock_data['sentiment'].fillna(0)
+        data_combined = np.column_stack((data_combined, stock_data['sentiment'].values))
 
     X, y = create_sequences(data_combined, seq_length)
     return X, y
@@ -80,8 +132,7 @@ class TransformerModel(nn.Module):
         return x
 
 @st.cache_resource
-def train_model(train_X, train_y, test_X, test_y, use_volume, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate):
-    input_size = 2 if use_volume else 1
+def train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate):
     train_X = torch.tensor(train_X, dtype=torch.float32)
     train_y = torch.tensor(train_y, dtype=torch.float32)
     test_X_tensor = torch.tensor(test_X, dtype=torch.float32).to(device)
@@ -120,7 +171,7 @@ def train_model(train_X, train_y, test_X, test_y, use_volume, hidden_size, num_l
                 progress_text.text(f"Epoch [{epoch+1}/{num_epochs}], Step [{current_step}/{total_steps}], Loss: {loss.item():.4f}")
             progress_bar.progress((i + 1) / len(train_X))
 
-        # Test the model every 500 epochs
+        # Test the model every epoch
         if epoch % 1 == 0:
             model.eval()
             with torch.no_grad():
@@ -136,17 +187,22 @@ def train_model(train_X, train_y, test_X, test_y, use_volume, hidden_size, num_l
     return model
 
 # Load and prepare the data
-tesla_data, scaler = load_data(stockSymbol)
-train_size = int(len(tesla_data) * 0.8)
-train_data = tesla_data[:train_size]
-test_data = tesla_data[train_size:]
+stock_data, scaler = load_data(stockSymbol)
+train_size = int(len(stock_data) * 0.8)
+train_data = stock_data[:train_size]
+test_data = stock_data[train_size:]
+
+# Fetch and prepare news data
+news_data = fetch_news(stockSymbol) if use_news else pd.DataFrame()
 
 # Ensure the input data is properly formatted
 seq_length = 20
+input_size = 2 if use_volume else 1
+input_size += 1 if use_news else 0
 
 # Create sequences for training and testing sets
-train_X, train_y = preprocess_data(train_data, use_volume, scaler, seq_length)
-test_X, test_y = preprocess_data(test_data, use_volume, scaler, seq_length)
+train_X, train_y = preprocess_data(train_data, news_data, use_volume, use_news, scaler, seq_length)
+test_X, test_y = preprocess_data(test_data, news_data, use_volume, use_news, scaler, seq_length)
 
 # Get user input for training parameters
 st.sidebar.header("Training Parameters")
@@ -154,24 +210,25 @@ hidden_size = st.sidebar.slider("Hidden Size", min_value=32, max_value=1024, val
 num_layers = st.sidebar.slider("Number of Layers", min_value=1, max_value=10, value=3, step=1)
 num_heads = st.sidebar.slider("Number of Heads", min_value=4, max_value=100, value=4, step=4)
 dropout = st.sidebar.slider("Dropout", min_value=0.0, max_value=0.5, value=0.1, step=0.01)
-num_epochs = st.sidebar.slider("Number of Epochs", min_value=1, max_value=100000, value=1, step=1)
+num_epochs = st.sidebar.slider("Number of Epochs", min_value=1, max_value=10000, value=1, step=1)
 batch_size = st.sidebar.slider("Batch Size", min_value=16, max_value=128, value=32, step=16)
 learning_rate = st.sidebar.slider("Learning Rate", min_value=0.0001, max_value=0.01, value=0.001, step=0.0001, format="%.4f")
 
 # Check if the stock symbol has changed
 if stockSymbol != st.session_state['stockSymbol']:
     st.session_state['stockSymbol'] = stockSymbol
-    tesla_data, scaler = load_data(stockSymbol)
-    train_size = int(len(tesla_data) * 0.8)
-    train_data = tesla_data[:train_size]
-    test_data = tesla_data[train_size:]
-    train_X, train_y = preprocess_data(train_data, use_volume, scaler, seq_length)
-    test_X, test_y = preprocess_data(test_data, use_volume, scaler, seq_length)
-    model = train_model(train_X, train_y, test_X, test_y, use_volume, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
+    stock_data, scaler = load_data(stockSymbol)
+    train_size = int(len(stock_data) * 0.8)
+    train_data = stock_data[:train_size]
+    test_data = stock_data[train_size:]
+    news_data = fetch_news(stockSymbol) if use_news else pd.DataFrame()
+    train_X, train_y = preprocess_data(train_data, news_data, use_volume, use_news, scaler, seq_length)
+    test_X, test_y = preprocess_data(test_data, news_data, use_volume, use_news, scaler, seq_length)
+    model = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
     st.experimental_rerun()
 
 # Train the model (cached)
-model = train_model(train_X, train_y, test_X, test_y, use_volume, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
+model = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
 
 # Save the trained model
 model_dir = '/Users/zachrizzo/programing/aI_assistant/stocks/models'
@@ -180,10 +237,21 @@ model_path = os.path.join(model_dir, model_filename)
 torch.save(model.state_dict(), model_path)
 
 if st.button("Rerun Training"):
-    model = train_model(train_X, train_y, test_X, test_y, use_volume, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
+    model = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
     # Save the retrained model
     torch.save(model.state_dict(), model_path)
     st.experimental_rerun()
+
+# Fetch and display news headlines for the stock symbol
+if use_news:
+    st.subheader("Latest News Headlines")
+    news_data = fetch_news(stockSymbol)
+    for _, row in news_data.iterrows():
+        st.write(f"**{row['title']}**")
+        st.write(f"[Read more]({row['link']})")
+        st.write(f"Published at: {row['publishedAt']}")
+        st.write(f"Sentiment: {row['sentiment']}")
+        st.write("---")
 
 # Calculate and display the number of neurons
 num_neurons = count_parameters(model)
