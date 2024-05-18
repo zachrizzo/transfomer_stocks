@@ -50,7 +50,7 @@ This repository contains a Streamlit application that predicts stock prices usin
 1. Run the Streamlit application:
 
    ```bash
-   streamlit run app.py
+   streamlit run main.py
    ```
 
 2. In the web interface:
