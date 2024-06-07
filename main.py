@@ -44,7 +44,6 @@ with col1:
     stockSymbol = st.text_input("Enter Stock Symbol", st.session_state['stockSymbol'])
 
 with col2:
-
     start_date = st.date_input("Start Date", datetime(2018, 1, 1))
 
 with col3:
@@ -101,7 +100,6 @@ def fetch_all_news(stockSymbol, stock_data_dates):
         batch_news = fetch_news_batch(stockSymbol, start_date, end_date)
         all_news = pd.concat([all_news, batch_news])
 
-
     return all_news
 
 @st.cache_resource
@@ -142,6 +140,12 @@ def preprocess_data(stock_data, news_data, use_volume, use_news, scaler, seq_len
             stock_data = stock_data.iloc[-len(data_combined):]
 
         data_combined = np.column_stack((data_combined, stock_data['sentiment'].values))
+
+    # Ensure data_combined has the correct shape
+    expected_shape = (len(stock_data) - seq_length, seq_length, data_combined.shape[1])
+    if data_combined.shape[0] < seq_length:
+        st.error(f"Insufficient data points. Required at least {seq_length + 1} but got {data_combined.shape[0]}.")
+        return np.empty(expected_shape), np.empty((0,))
 
     X, y = create_sequences(data_combined, seq_length)
     return X, y
@@ -193,8 +197,14 @@ def train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_l
     chart_placeholder = st.empty()
 
     for epoch in range(num_epochs):
+        if st.session_state.get('stop_training', False):
+            break  # Exit the training loop if stop button is pressed
+
         model.train()
         for i in range(0, train_X.size(0), batch_size):
+            if st.session_state.get('stop_training', False):
+                break  # Exit the training loop if stop button is pressed
+
             batch_X = train_X[i:i+batch_size].to(device)
             batch_y = train_y[i:i+batch_size].to(device)
             optimizer.zero_grad()
@@ -254,9 +264,23 @@ num_epochs = st.sidebar.slider("Number of Epochs", min_value=1, max_value=10000,
 batch_size = st.sidebar.slider("Batch Size", min_value=16, max_value=128, value=32, step=16)
 learning_rate = st.sidebar.slider("Learning Rate", min_value=0.0001, max_value=0.01, value=0.001, step=0.0001, format="%.4f")
 
+# Add stop training button
+if 'stop_training' not in st.session_state:
+    st.session_state['stop_training'] = False
+
+def stop_training():
+    st.session_state['stop_training'] = True
+
+def reset_training_flag():
+    st.session_state['stop_training'] = False
+
+if st.sidebar.button("Stop Training"):
+    stop_training()
+
 # Check if the stock symbol has changed
 if stockSymbol != st.session_state['stockSymbol']:
     st.session_state['stockSymbol'] = stockSymbol
+    reset_training_flag()
     stock_data, scaler = load_data(stockSymbol, start_date, end_date)
     train_size = int(len(stock_data) * 0.8)
     train_data = stock_data[:train_size]
@@ -270,50 +294,52 @@ if stockSymbol != st.session_state['stockSymbol']:
 # Train the model (cached)
 model = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
 
-# Save the trained model
 model_dir = 'models'
-model_filename = 'stock_prediction_model.pt'
-model_path = os.path.join(model_dir, model_filename + datetime.now().strftime("%Y%m%d%H%M%S"))
+model_filename = 'stock_prediction_model'
+model_path = os.path.join(model_dir, model_filename) + f'{datetime.now().strftime("%m-%d-%Y_%H-%M-%S")}.pt'
 torch.save(model.state_dict(), model_path)
 
+# Train the model (cached)
 if st.button("Rerun Training"):
+    reset_training_flag()
     model = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
     # Save the retrained model
+    model_path = os.path.join(model_dir, model_filename + datetime.now().strftime("%Y%m%d%H%M%S"))
     torch.save(model.state_dict(), model_path)
     st.experimental_rerun()
 
+# Display the model summary
+st.subheader("Model Summary")
+st.write(model)
+
 # Fetch and display news headlines for the stock symbol
 if use_news:
+    st.subheader("Latest News Headlines")
+    news_data = fetch_all_news(stockSymbol, dates)
+    st.write(f"Fetched {len(news_data)} news articles for {stockSymbol} from {dates.min()} to {dates.max()}")
+    with st.expander("Show News Data"):
+        st.write(news_data)
+    with st.expander("Show News Data"):
+        news_container = st.container()
+        with news_container:
+            for _, row in news_data.iterrows():
+                st.write(f"**{row['title']}**")
+                st.write(f"[Read more]({row['link']})")
+                st.write(f"Published at: {row['publishedAt']}")
+                st.write(f"Sentiment: {row['sentiment']}")
+                st.write("---")
 
-        st.subheader("Latest News Headlines")
-        news_data = fetch_all_news(stockSymbol, dates)
-
-        st.write(f"Fetched {len(news_data)} news articles for {stockSymbol} from {dates.min()} to {dates.max()}")
-
-
-        with st.expander("Show News Data"):
-            st.write(news_data)
-        with st.expander("Show News Data"):
-            news_container = st.container()
-            with news_container:
-                for _, row in news_data.iterrows():
-                    st.write(f"**{row['title']}**")
-                    st.write(f"[Read more]({row['link']})")
-                    st.write(f"Published at: {row['publishedAt']}")
-                    st.write(f"Sentiment: {row['sentiment']}")
-                    st.write("---")
-
-            st.markdown(
-                """
-                <style>
-                .streamlit-expanderContent {
-                    max-height: 300px;
-                    overflow-y: auto;
-                }
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
+        st.markdown(
+            """
+            <style>
+            .streamlit-expanderContent {
+                max-height: 300px;
+                overflow-y: auto;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
 
 # Calculate and display the number of neurons
 num_neurons = count_parameters(model)
@@ -352,12 +378,131 @@ if download_model:
             )
     else:
         st.error('Model file not found.')
-
 model_files = [f for f in os.listdir(model_dir) if f.endswith('.pt')]
 selected_model = st.selectbox("Select Model", model_files)
 
+# Load the model
 if selected_model:
     model_path = os.path.join(model_dir, selected_model)
-    model.load_state_dict(torch.load(model_path))
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
+    model.eval()  # Ensure the model is in evaluation mode
     st.success(f"Model {selected_model} loaded successfully!")
+
+# Set the default start and end dates
+default_start_date = start_date  # Example start date
+default_end_date = end_date  # Example end date
+
+# Load and scale stock data
+stock_data, scaler = load_data(stockSymbol, start_date, end_date)
+
+# Input for prediction period
+prediction_period = st.number_input('Enter the number of days for prediction:', min_value=1, max_value=365, value=10)
+
+# Ensure we have enough data for the model
+seq_length = 20  # Adjust this to match the sequence length used in your model
+total_period = seq_length + prediction_period
+
+# Ensure end_date is set to the last date in stock_data
+end_date = stock_data.index[-1]  # Adjust this line according to your actual end_date
+future_dates = pd.date_range(start=end_date + timedelta(days=1), periods=prediction_period).date  # Generate future dates
+
+# Create a DataFrame for future dates
+future_data = stock_data.copy()
+future_data = future_data.append(pd.DataFrame(index=future_dates))
+
+# Fill any NaN values in future_data
+future_data.fillna(method='ffill', inplace=True)
+
+# Fetch and prepare news data for the future dates
+future_news_data = fetch_all_news(stockSymbol, future_dates) if use_news else pd.DataFrame()
+
+# Ensure the input data is properly formatted
+future_X, _ = preprocess_data(future_data, future_news_data, use_volume, use_news, scaler, seq_length)
+
+# Debugging: Print shapes to verify
+st.write("Future data shape:", future_data.shape)
+st.write("Future news data shape:", future_news_data.shape)
+st.write("Preprocessed future_X shape:", future_X.shape)
+
+# Dynamically set input size based on user selections
+input_size = 1  # Base input size for 'Normalized_Close'
+if use_volume:
+    input_size += 1  # Add volume data if selected
+if use_news:
+    input_size += 1  # Add news sentiment if selected
+
+# Ensure future_X is reshaped to match model input expectations
+future_X_tensor = torch.tensor(future_X, dtype=torch.float32).to(device)
+
+# Ensure the tensor shape is (batch_size, sequence_length, input_size)
+batch_size, seq_length, actual_input_size = future_X_tensor.shape
+
+# Check if input size matches expected size before reshaping
+if actual_input_size != input_size:
+    st.error(f"Shape mismatch: future_X_tensor cannot be reshaped to ({batch_size}, {seq_length}, {input_size}) because actual input size is {actual_input_size}")
+else:
+    future_X_tensor = future_X_tensor.view(batch_size, seq_length, input_size)
+
+# Debugging: Print the tensor to verify no NaN values are present
+st.write("Initial future_X_tensor:", future_X_tensor)
+
+# Predict the future prices one step at a time
+future_predictions = []
+for _ in range(prediction_period):
+    with torch.no_grad():
+        future_pred = model(future_X_tensor)
+        st.write("Future prediction tensor:", future_pred)  # Debugging: Print the prediction tensor
+        future_predictions.append(future_pred.cpu().numpy()[-1, 0])  # Ensure to take the correct prediction value
+
+    # Check for NaN values in the prediction
+    if torch.isnan(future_pred).any():
+        st.error("NaN values found in future prediction tensor.")
+        break
+
+    # Append the predicted value to the future data for the next prediction
+    new_data = torch.cat([future_X_tensor[:, 1:, :], future_pred[:, None, :]], dim=1)
+    future_X_tensor = new_data
+
+# Ensure the predicted values match the prediction period
+future_predicted = np.array(future_predictions).reshape(-1, 1)  # Ensure the shape is correct for inverse transform
+
+# Check the length of future_dates
+future_dates_for_index = pd.date_range(start=end_date + timedelta(days=1), periods=prediction_period).date
+
+# Debugging: Print lengths to verify
+st.write("Future dates for index length:", len(future_dates_for_index))
+st.write("Future predicted length:", len(future_predicted))
+
+if len(future_dates_for_index) != len(future_predicted):
+    st.error(f"Length mismatch: future_dates_for_index has {len(future_dates_for_index)} elements, but future_predicted has {len(future_predicted)} elements.")
+else:
+    # Inverse transform the predicted values
+    # Create a scaler for inverse transformation based only on the Close prices
+    close_scaler = MinMaxScaler()
+    close_scaler.min_, close_scaler.scale_ = scaler.min_[0], scaler.scale_[0]
+
+    predicted_df = pd.DataFrame(future_predicted, columns=['Normalized_Close'])
+    predicted_df['Predicted_Close'] = close_scaler.inverse_transform(predicted_df[['Normalized_Close']])
+    predicted_df.index = future_dates_for_index
+
+    # Save numeric predicted values for plotting
+    numeric_predicted_close = predicted_df['Predicted_Close'].copy()
+
+    # Convert predicted values to monetary form for display
+    predicted_df['Predicted_Close'] = predicted_df['Predicted_Close'].apply(lambda x: f"${x:,.2f}")
+
+    # Display the predicted prices
+    st.subheader(f"Predicted Stock Prices for the Next {prediction_period} Days")
+    st.write(predicted_df)
+
+    # Plot the future prices
+    st.subheader("Future Stock Prices")
+
+    # Concatenate the last 10 days of actual data with the predictions
+    last_10_days = stock_data[['Close']].iloc[-10:]
+    future_chart_data = pd.concat([last_10_days, numeric_predicted_close], axis=1)
+    future_chart_data.columns = ['Actual_Close', 'Predicted_Close']
+
+    # Plotting using st.line_chart
+    st.line_chart(future_chart_data)
