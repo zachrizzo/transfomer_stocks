@@ -21,6 +21,13 @@ alpaca_api_secret_key = os.getenv('ALPACA_PAPER_SECRET')
 # Set page title
 st.set_page_config(page_title="Stock Prediction with News")
 
+header_col1, header_col2 = st.columns([1, 4])
+with header_col1:
+    st.page_link("main.py", label="Home", icon="🏠")
+with header_col2:
+    st.page_link("pages/trading.py", label="Trading", icon="📈")
+st.divider()
+
 # Add a title and description
 st.title("Stock Prediction using Transformer Model with News")
 st.write("This app predicts stock prices using a PyTorch Transformer model and news sentiment analysis.")
@@ -105,11 +112,14 @@ def fetch_all_news(stockSymbol, stock_data_dates):
 @st.cache_resource
 def load_data(stockSymbol, start_date, end_date):
     stock_data = yf.download(stockSymbol, start=start_date, end=end_date)
-    st.write(stock_data)
-    print(stock_data.head())
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    stock_data['Normalized_Close'] = scaler.fit_transform(stock_data['Close'].values.reshape(-1, 1))
-    return stock_data, scaler
+    close_scaler = MinMaxScaler(feature_range=(0, 1))
+    stock_data['Normalized_Close'] = close_scaler.fit_transform(stock_data['Close'].values.reshape(-1, 1))
+
+    if 'Volume' in stock_data.columns:
+        volume_scaler = MinMaxScaler(feature_range=(0, 1))
+        stock_data['Normalized_Volume'] = volume_scaler.fit_transform(stock_data['Volume'].values.reshape(-1, 1))
+
+    return stock_data, close_scaler
 
 def create_sequences(data, seq_length):
     xs, ys = [], []
@@ -123,29 +133,41 @@ def create_sequences(data, seq_length):
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def preprocess_data(stock_data, news_data, use_volume, use_news, scaler, seq_length):
-    if use_volume:
-        stock_data['Normalized_Volume'] = scaler.fit_transform(stock_data['Volume'].values.reshape(-1, 1))
-        data_combined = np.column_stack((stock_data['Normalized_Close'].values, stock_data['Normalized_Volume'].values))
-    else:
-        data_combined = stock_data['Normalized_Close'].values.reshape(-1, 1)
+def predict_future(model_state_dict, last_sequence, num_days, close_scaler, input_size, hidden_size, num_layers, num_heads, dropout):
+    model = TransformerModel(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, num_heads=num_heads, dropout=dropout)
+    model.load_state_dict(model_state_dict)
+    model.to(device)
+    model.eval()
+    future_predictions = []
+    current_sequence = last_sequence.clone()
+
+    for _ in range(num_days):
+        with torch.no_grad():
+            prediction = model(current_sequence.unsqueeze(0))
+        future_predictions.append(prediction.item())
+
+        # Update the sequence for the next prediction
+        current_sequence = torch.cat((current_sequence[1:], prediction), dim=0)
+
+    # Denormalize the predictions
+    future_predictions = close_scaler.inverse_transform(np.array(future_predictions).reshape(-1, 1))
+    return future_predictions.flatten()
+
+def preprocess_data(stock_data, news_data, use_volume, use_news, close_scaler, seq_length):
+    features = [stock_data['Normalized_Close'].values.reshape(-1, 1)]
+
+    if use_volume and 'Normalized_Volume' in stock_data.columns:
+        features.append(stock_data['Normalized_Volume'].values.reshape(-1, 1))
 
     if use_news and not news_data.empty:
         news_data = news_data.set_index('publishedAt')
         stock_data = stock_data.join(news_data['sentiment'], how='left')
         stock_data['sentiment'] = stock_data['sentiment'].fillna(0)
+        sentiment_scaler = MinMaxScaler(feature_range=(0, 1))
+        normalized_sentiment = sentiment_scaler.fit_transform(stock_data['sentiment'].values.reshape(-1, 1))
+        features.append(normalized_sentiment)
 
-        # Ensure the lengths match
-        if len(stock_data) != len(data_combined):
-            stock_data = stock_data.iloc[-len(data_combined):]
-
-        data_combined = np.column_stack((data_combined, stock_data['sentiment'].values))
-
-    # Ensure data_combined has the correct shape
-    expected_shape = (len(stock_data) - seq_length, seq_length, data_combined.shape[1])
-    if data_combined.shape[0] < seq_length:
-        st.error(f"Insufficient data points. Required at least {seq_length + 1} but got {data_combined.shape[0]}.")
-        return np.empty(expected_shape), np.empty((0,))
+    data_combined = np.hstack(features)
 
     X, y = create_sequences(data_combined, seq_length)
     return X, y
@@ -233,10 +255,11 @@ def train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_l
                 # Update the chart with the new data
                 chart_placeholder.line_chart(test_chart_data, width=800, height=800)
 
-    return model
+    return model.state_dict()
+
 
 # Load and prepare the data
-stock_data, scaler = load_data(stockSymbol, start_date, end_date)
+stock_data, close_scaler = load_data(stockSymbol, start_date, end_date)
 train_size = int(len(stock_data) * 0.8)
 train_data = stock_data[:train_size]
 test_data = stock_data[train_size:]
@@ -251,8 +274,8 @@ input_size = 2 if use_volume else 1
 input_size += 1 if use_news else 0
 
 # Create sequences for training and testing sets
-train_X, train_y = preprocess_data(train_data, news_data, use_volume, use_news, scaler, seq_length)
-test_X, test_y = preprocess_data(test_data, news_data, use_volume, use_news, scaler, seq_length)
+train_X, train_y = preprocess_data(train_data, news_data, use_volume, use_news, close_scaler, seq_length)
+test_X, test_y = preprocess_data(test_data, news_data, use_volume, use_news, close_scaler, seq_length)
 
 # Get user input for training parameters
 st.sidebar.header("Training Parameters")
@@ -291,13 +314,22 @@ if stockSymbol != st.session_state['stockSymbol']:
     model = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
     st.experimental_rerun()
 
-# Train the model (cached)
-model = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
+# # Train the model (cached)
+# model = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
+
+# When saving the model, save the state_dict instead of the entire model
+model_state_dict = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
 
 model_dir = 'models'
-model_filename = 'stock_prediction_model'
-model_path = os.path.join(model_dir, model_filename) + f'{datetime.now().strftime("%m-%d-%Y_%H-%M-%S")}.pt'
-torch.save(model.state_dict(), model_path)
+model_filename = f'stock_prediction_model_{datetime.now().strftime("%m-%d-%Y_%H-%M-%S")}.pt'
+model_path = os.path.join(model_dir, model_filename)
+torch.save(model_state_dict, model_path)
+
+# Create a model instance for evaluation and prediction
+model = TransformerModel(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, num_heads=num_heads, dropout=dropout)
+model.load_state_dict(model_state_dict)
+model.to(device)
+model.eval()
 
 # Train the model (cached)
 if st.button("Rerun Training"):
@@ -305,7 +337,7 @@ if st.button("Rerun Training"):
     model = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
     # Save the retrained model
     model_path = os.path.join(model_dir, model_filename + datetime.now().strftime("%Y%m%d%H%M%S"))
-    torch.save(model.state_dict(), model_path)
+    torch.save(model, model_path)
     st.experimental_rerun()
 
 # Display the model summary
@@ -352,6 +384,17 @@ model.to(device)
 test_X_tensor = torch.tensor(test_X, dtype=torch.float32).to(device)
 test_y_tensor = torch.tensor(test_y, dtype=torch.float32).to(device)
 
+# Ensure the model is in evaluation mode
+model.eval()
+
+# Normalize data function
+def normalize(data, mean, std):
+    return (data - mean) / std
+
+# Denormalize data function
+def denormalize(data, mean, std):
+    return data * std + mean
+
 # Predictions with MPS handling
 with torch.no_grad():
     test_predicted = model(test_X_tensor)
@@ -384,125 +427,45 @@ selected_model = st.selectbox("Select Model", model_files)
 # Load the model
 if selected_model:
     model_path = os.path.join(model_dir, selected_model)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model_state_dict = torch.load(model_path, map_location=device)
+    model = TransformerModel(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, num_heads=num_heads, dropout=dropout)
+    model.load_state_dict(model_state_dict)
     model.to(device)
-    model.eval()  # Ensure the model is in evaluation mode
+    model.eval()
     st.success(f"Model {selected_model} loaded successfully!")
 
 # Set the default start and end dates
 default_start_date = start_date  # Example start date
 default_end_date = end_date  # Example end date
 
-# Load and scale stock data
-stock_data, scaler = load_data(stockSymbol, start_date, end_date)
 
-# Input for prediction period
-prediction_period = st.number_input('Enter the number of days for prediction:', min_value=1, max_value=365, value=10)
+st.write(stock_data)
 
-# Ensure we have enough data for the model
-seq_length = 20  # Adjust this to match the sequence length used in your model
-total_period = seq_length + prediction_period
+st.subheader("Predict Future Stock Prices")
+num_days = st.number_input("Number of days to predict", min_value=1, max_value=30, value=7)
 
-# Ensure end_date is set to the last date in stock_data
-end_date = stock_data.index[-1]  # Adjust this line according to your actual end_date
-future_dates = pd.date_range(start=end_date + timedelta(days=1), periods=prediction_period).date  # Generate future dates
+if st.button("Predict Future"):
+    last_sequence = torch.tensor(test_X[-1], dtype=torch.float32).to(device)
+    future_predictions = predict_future(model_state_dict, last_sequence, num_days, close_scaler, input_size, hidden_size, num_layers, num_heads, dropout)
 
-# Create a DataFrame for future dates
-future_data = stock_data.copy()
-future_data = future_data.append(pd.DataFrame(index=future_dates))
+    # Create a DataFrame for the future predictions
+    future_dates = pd.date_range(start=test_data.index[-1] + timedelta(days=1), periods=num_days)
+    future_df = pd.DataFrame({'Date': future_dates, 'Predicted Price': future_predictions})
 
-# Fill any NaN values in future_data
-future_data.fillna(method='ffill', inplace=True)
+    # Combine actual data with future predictions for visualization
+    last_actual_price = test_data['Close'].iloc[-1]
+    combined_df = pd.concat([
+        test_data[['Close']].tail(30).rename(columns={'Close': 'Actual Price'}),
+        future_df.set_index('Date')
+    ])
 
-# Fetch and prepare news data for the future dates
-future_news_data = fetch_all_news(stockSymbol, future_dates) if use_news else pd.DataFrame()
+    st.write("Future Price Predictions:")
+    st.write(future_df)
 
-# Ensure the input data is properly formatted
-future_X, _ = preprocess_data(future_data, future_news_data, use_volume, use_news, scaler, seq_length)
+    st.subheader("Actual vs Predicted Prices")
+    st.line_chart(combined_df)
 
-# Debugging: Print shapes to verify
-st.write("Future data shape:", future_data.shape)
-st.write("Future news data shape:", future_news_data.shape)
-st.write("Preprocessed future_X shape:", future_X.shape)
-
-# Dynamically set input size based on user selections
-input_size = 1  # Base input size for 'Normalized_Close'
-if use_volume:
-    input_size += 1  # Add volume data if selected
-if use_news:
-    input_size += 1  # Add news sentiment if selected
-
-# Ensure future_X is reshaped to match model input expectations
-future_X_tensor = torch.tensor(future_X, dtype=torch.float32).to(device)
-
-# Ensure the tensor shape is (batch_size, sequence_length, input_size)
-batch_size, seq_length, actual_input_size = future_X_tensor.shape
-
-# Check if input size matches expected size before reshaping
-if actual_input_size != input_size:
-    st.error(f"Shape mismatch: future_X_tensor cannot be reshaped to ({batch_size}, {seq_length}, {input_size}) because actual input size is {actual_input_size}")
-else:
-    future_X_tensor = future_X_tensor.view(batch_size, seq_length, input_size)
-
-# Debugging: Print the tensor to verify no NaN values are present
-st.write("Initial future_X_tensor:", future_X_tensor)
-
-# Predict the future prices one step at a time
-future_predictions = []
-for _ in range(prediction_period):
-    with torch.no_grad():
-        future_pred = model(future_X_tensor)
-        st.write("Future prediction tensor:", future_pred)  # Debugging: Print the prediction tensor
-        future_predictions.append(future_pred.cpu().numpy()[-1, 0])  # Ensure to take the correct prediction value
-
-    # Check for NaN values in the prediction
-    if torch.isnan(future_pred).any():
-        st.error("NaN values found in future prediction tensor.")
-        break
-
-    # Append the predicted value to the future data for the next prediction
-    new_data = torch.cat([future_X_tensor[:, 1:, :], future_pred[:, None, :]], dim=1)
-    future_X_tensor = new_data
-
-# Ensure the predicted values match the prediction period
-future_predicted = np.array(future_predictions).reshape(-1, 1)  # Ensure the shape is correct for inverse transform
-
-# Check the length of future_dates
-future_dates_for_index = pd.date_range(start=end_date + timedelta(days=1), periods=prediction_period).date
-
-# Debugging: Print lengths to verify
-st.write("Future dates for index length:", len(future_dates_for_index))
-st.write("Future predicted length:", len(future_predicted))
-
-if len(future_dates_for_index) != len(future_predicted):
-    st.error(f"Length mismatch: future_dates_for_index has {len(future_dates_for_index)} elements, but future_predicted has {len(future_predicted)} elements.")
-else:
-    # Inverse transform the predicted values
-    # Create a scaler for inverse transformation based only on the Close prices
-    close_scaler = MinMaxScaler()
-    close_scaler.min_, close_scaler.scale_ = scaler.min_[0], scaler.scale_[0]
-
-    predicted_df = pd.DataFrame(future_predicted, columns=['Normalized_Close'])
-    predicted_df['Predicted_Close'] = close_scaler.inverse_transform(predicted_df[['Normalized_Close']])
-    predicted_df.index = future_dates_for_index
-
-    # Save numeric predicted values for plotting
-    numeric_predicted_close = predicted_df['Predicted_Close'].copy()
-
-    # Convert predicted values to monetary form for display
-    predicted_df['Predicted_Close'] = predicted_df['Predicted_Close'].apply(lambda x: f"${x:,.2f}")
-
-    # Display the predicted prices
-    st.subheader(f"Predicted Stock Prices for the Next {prediction_period} Days")
-    st.write(predicted_df)
-
-    # Plot the future prices
-    st.subheader("Future Stock Prices")
-
-    # Concatenate the last 10 days of actual data with the predictions
-    last_10_days = stock_data[['Close']].iloc[-10:]
-    future_chart_data = pd.concat([last_10_days, numeric_predicted_close], axis=1)
-    future_chart_data.columns = ['Actual_Close', 'Predicted_Close']
-
-    # Plotting using st.line_chart
-    st.line_chart(future_chart_data)
+    # Calculate and display the predicted price change
+    price_change = future_predictions[-1] - last_actual_price
+    percent_change = (price_change / last_actual_price) * 100
+    st.write(f"Predicted price change over {num_days} days: ${price_change:.2f} ({percent_change:.2f}%)")
