@@ -15,11 +15,16 @@ import dotenv
 dotenv.load_dotenv()
 
 # Set the API keys
-alpaca_api_key_id = os.getenv('ALPACA_PAPER_KEY_ID')
-alpaca_api_secret_key = os.getenv('ALPACA_PAPER_SECRET')
+alpaca_api_key_id = os.getenv('ALPACA_LIVE_KEY_ID')
+alpaca_api_secret_key = os.getenv('ALPACA_LIVE_SECRET')
+
+
 
 # Set page title
 st.set_page_config(page_title="Stock Prediction with News")
+
+st.write (alpaca_api_key_id)
+st.write (alpaca_api_secret_key)
 
 header_col1, header_col2 = st.columns([1, 4])
 with header_col1:
@@ -98,14 +103,17 @@ def fetch_news_batch(stockSymbol, start_date, end_date):
 def fetch_all_news(stockSymbol, stock_data_dates):
     all_news = pd.DataFrame()
     stock_data_dates = pd.to_datetime(stock_data_dates).date
-    unique_dates = list(stock_data_dates)
-    print(stock_data_dates)
+    unique_dates = sorted(set(stock_data_dates))  # Ensure dates are unique and sorted
 
     for i in range(0, len(unique_dates), 50):
         start_date = unique_dates[i]
         end_date = unique_dates[min(i + 49, len(unique_dates) - 1)]
         batch_news = fetch_news_batch(stockSymbol, start_date, end_date)
         all_news = pd.concat([all_news, batch_news])
+
+    # Ensure the index is a DatetimeIndex and remove any duplicates
+    all_news.index = pd.to_datetime(all_news['publishedAt']).dt.date
+    all_news = all_news[~all_news.index.duplicated(keep='first')]
 
     return all_news
 
@@ -149,15 +157,19 @@ def predict_future(model_state_dict, last_sequence, num_days, close_scaler, inpu
         close_prediction = prediction[0, 0].item()
         future_predictions.append(close_prediction)
 
-        # Update the sequence for the next prediction
-        # If using volume, you need to provide a placeholder for volume in the next prediction
-        if input_size > 1:
-            # Use the last known volume as a placeholder
-            last_volume = current_sequence[-1, 1].item()
-            new_datapoint = torch.tensor([close_prediction, last_volume], device=device)
-        else:
-            new_datapoint = torch.tensor([close_prediction], device=device)
+        # Create a new datapoint with the correct number of features
+        new_datapoint = torch.zeros(input_size, device=device)
+        new_datapoint[0] = close_prediction
 
+        # If using volume, set a placeholder value (e.g., last known volume)
+        if input_size > 1:
+            new_datapoint[1] = current_sequence[-1, 1].item()
+
+        # If using news, set a neutral sentiment (0.5 after normalization)
+        if input_size > 2:
+            new_datapoint[2] = 0.5
+
+        # Update the sequence for the next prediction
         current_sequence = torch.cat((current_sequence[1:], new_datapoint.unsqueeze(0)), dim=0)
 
     # Denormalize the predictions
@@ -171,13 +183,18 @@ def preprocess_data(stock_data, news_data, use_volume, use_news, close_scaler, s
         features.append(stock_data['Normalized_Volume'].values.reshape(-1, 1))
 
     if use_news and not news_data.empty:
-        news_data = news_data.set_index('publishedAt')
-        stock_data = stock_data.join(news_data['sentiment'], how='left')
-        stock_data['sentiment'] = stock_data['sentiment'].fillna(0)
+        # Ensure news_data has the same index as stock_data
+        news_data = news_data.reindex(stock_data.index, fill_value=0)
+
+        # Add sentiment to stock_data
+        stock_data['sentiment'] = news_data['sentiment']
+
+        # Normalize sentiment
         sentiment_scaler = MinMaxScaler(feature_range=(0, 1))
         normalized_sentiment = sentiment_scaler.fit_transform(stock_data['sentiment'].values.reshape(-1, 1))
         features.append(normalized_sentiment)
 
+    # Combine all features
     data_combined = np.hstack(features)
 
     X, y = create_sequences(data_combined, seq_length)
@@ -292,10 +309,10 @@ test_X, test_y = preprocess_data(test_data, news_data, use_volume, use_news, clo
 st.sidebar.header("Training Parameters")
 hidden_size = st.sidebar.slider("Hidden Size", min_value=32, max_value=1024, value=512, step=32)
 num_layers = st.sidebar.slider("Number of Layers", min_value=1, max_value=10, value=3, step=1)
-num_heads = st.sidebar.slider("Number of Heads", min_value=4, max_value=100, value=4, step=4)
+num_heads = st.sidebar.slider("Number of Heads", min_value=0, max_value=600, value=0, step=64)
 dropout = st.sidebar.slider("Dropout", min_value=0.0, max_value=0.5, value=0.1, step=0.01)
 num_epochs = st.sidebar.slider("Number of Epochs", min_value=1, max_value=10000, value=1, step=1)
-batch_size = st.sidebar.slider("Batch Size", min_value=16, max_value=128, value=32, step=16)
+batch_size = st.sidebar.slider("Batch Size", min_value=16, max_value=240, value=32, step=16)
 learning_rate = st.sidebar.slider("Learning Rate", min_value=0.0001, max_value=0.01, value=0.001, step=0.0001, format="%.4f")
 
 # Add stop training button
@@ -325,8 +342,6 @@ if stockSymbol != st.session_state['stockSymbol']:
     model = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
     st.experimental_rerun()
 
-# # Train the model (cached)
-# model = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
 
 # When saving the model, save the state_dict instead of the entire model
 model_state_dict = train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate)
@@ -457,6 +472,7 @@ num_days = st.number_input("Number of days to predict", min_value=1, max_value=3
 
 if st.button("Predict Future"):
     last_sequence = torch.tensor(test_X[-1], dtype=torch.float32).to(device)
+    input_size = last_sequence.shape[1]  # Get the input size from the last sequence
     future_predictions = predict_future(model_state_dict, last_sequence, num_days, close_scaler, input_size, hidden_size, num_layers, num_heads, dropout)
 
     # Create a DataFrame for the future predictions
