@@ -144,10 +144,21 @@ def predict_future(model_state_dict, last_sequence, num_days, close_scaler, inpu
     for _ in range(num_days):
         with torch.no_grad():
             prediction = model(current_sequence.unsqueeze(0))
-        future_predictions.append(prediction.item())
+
+        # Extract only the close price prediction (first element)
+        close_prediction = prediction[0, 0].item()
+        future_predictions.append(close_prediction)
 
         # Update the sequence for the next prediction
-        current_sequence = torch.cat((current_sequence[1:], prediction), dim=0)
+        # If using volume, you need to provide a placeholder for volume in the next prediction
+        if input_size > 1:
+            # Use the last known volume as a placeholder
+            last_volume = current_sequence[-1, 1].item()
+            new_datapoint = torch.tensor([close_prediction, last_volume], device=device)
+        else:
+            new_datapoint = torch.tensor([close_prediction], device=device)
+
+        current_sequence = torch.cat((current_sequence[1:], new_datapoint.unsqueeze(0)), dim=0)
 
     # Denormalize the predictions
     future_predictions = close_scaler.inverse_transform(np.array(future_predictions).reshape(-1, 1))
