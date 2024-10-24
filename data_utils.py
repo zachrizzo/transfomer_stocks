@@ -27,29 +27,38 @@ def load_data(stockSymbol, start_date, end_date):
 
     return stock_data, close_scaler
 
-def preprocess_data(stock_data, news_data, use_volume, use_news, close_scaler, seq_length):
-    features = [stock_data['Normalized_Close'].values.reshape(-1, 1)]
+def preprocess_data(stock_data, news_data, list_of_indicators, close_scaler, seq_length):
+    features = []
 
-    if use_volume and 'Normalized_Volume' in stock_data.columns:
-        features.append(stock_data['Normalized_Volume'].values.reshape(-1, 1))
+    # Always include normalized close price
+    features.append(stock_data['Normalized_Close'].values.reshape(-1, 1))
 
-    if use_news and not news_data.empty:
-        # Ensure news_data has the same index as stock_data
-        news_data = news_data.reindex(stock_data.index, fill_value=0)
-
-        # Add sentiment to stock_data
-        stock_data['sentiment'] = news_data['sentiment']
-
-        # Normalize sentiment
-        sentiment_scaler = MinMaxScaler(feature_range=(0, 1))
-        normalized_sentiment = sentiment_scaler.fit_transform(stock_data['sentiment'].values.reshape(-1, 1))
-        features.append(normalized_sentiment)
+    # Process each selected indicator
+    for indicator in list_of_indicators:
+        if indicator['selected']:
+            if indicator['key'] == 'volume':
+                if 'Normalized_Volume' in stock_data.columns:
+                    features.append(stock_data['Normalized_Volume'].values.reshape(-1, 1))
+            elif indicator['key'] == 'news':
+                if not news_data.empty:
+                    news_data = news_data.reindex(stock_data.index, fill_value=0)
+                    sentiment_scaler = MinMaxScaler(feature_range=(0, 1))
+                    normalized_sentiment = sentiment_scaler.fit_transform(news_data['sentiment'].values.reshape(-1, 1))
+                    features.append(normalized_sentiment)
+            else:
+                if indicator['name'] in stock_data.columns:
+                    indicator_scaler = MinMaxScaler(feature_range=(0, 1))
+                    normalized_indicator = indicator_scaler.fit_transform(stock_data[indicator['name']].values.reshape(-1, 1))
+                    features.append(normalized_indicator)
 
     # Combine all features
-    data_combined = np.hstack(features)
-
-    X, y = create_sequences(data_combined, seq_length)
-    return X, y
+    if features:
+        data_combined = np.hstack(features)
+        X, y = create_sequences(data_combined, seq_length)
+        return X, y
+    else:
+        # Return empty arrays if no features are selected
+        return np.array([]), np.array([])
 
 @st.cache_resource
 def fetch_news_batch(stockSymbol, start_date, end_date):
@@ -121,3 +130,5 @@ def normalize(data, mean, std):
 # Denormalize data function
 def denormalize(data, mean, std):
     return data * std + mean
+
+
