@@ -1,113 +1,158 @@
-# Stock Prediction with News
+# Stock Price Prediction with Transformer Model
 
-This repository contains a Streamlit application that predicts stock prices using a PyTorch Transformer model and news sentiment analysis. The app fetches historical stock data from Yahoo Finance and news articles from Alpaca, processes the data, trains a Transformer model, and visualizes the results.
+![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.27+-green.svg)
 
-## Table of Contents
+A sophisticated web application that uses a Transformer neural network model to predict stock prices. The application combines historical stock price data with technical indicators and news sentiment analysis to improve prediction accuracy.
 
-- [Stock Prediction with News](#stock-prediction-with-news)
-  - [Table of Contents](#table-of-contents)
-  - [Installation](#installation)
-  - [Usage](#usage)
-  - [Model Architecture](#model-architecture)
-  - [Data Fetching and Preprocessing](#data-fetching-and-preprocessing)
-  - [Training](#training)
-  - [Evaluation](#evaluation)
-  - [Contributing](#contributing)
-  - [License](#license)
-  - [Acknowledgements](#acknowledgements)
+![Application Screenshot](https://github.com/zachrizzo/transfomer_stocks/assets/placeholder/screenshot.png)
+
+## Features
+
+- Interactive web interface built with Streamlit
+- Transformer-based neural network architecture for time series forecasting
+- Support for multiple technical indicators:
+  - Simple Moving Average (SMA)
+  - Exponential Moving Average (EMA)
+  - Moving Average Convergence Divergence (MACD)
+  - Relative Strength Index (RSI)
+  - Bollinger Bands
+  - Average True Range (ATR)
+  - Average Directional Index (ADX)
+- Integration with news sentiment analysis to incorporate market sentiment
+- Real-time data fetching from Yahoo Finance
+- News data fetching from Alpaca API
+- Interactive model training with adjustable parameters
+- Future stock price prediction with visualization
+- Model download capability for external use
 
 ## Installation
 
+### Prerequisites
+
+- Python 3.9 or higher
+- Alpaca API keys (for news data)
+
+### Setup
+
 1. Clone the repository:
 
-   ```bash
-   git clone https://github.com/zachrizzo/transfomer_stocks.git
-   cd stock-prediction-with-news
-   ```
+```bash
+git clone https://github.com/zachrizzo/transfomer_stocks.git
+cd transfomer_stocks
+```
 
-2. Create and activate a virtual environment with Anaconda:
+2. Create and activate a virtual environment (optional but recommended):
 
-   ```bash
-   conda create --name stock_prediction_env python=3.9
-   conda activate stock_prediction_env
-   ```
+```bash
+# Using conda
+conda create -n stock_prediction python=3.9
+conda activate stock_prediction
+
+# Or using venv
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
 
 3. Install the required packages:
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
+```
 
-4. Create a `.env` file in the root directory and add your Alpaca API keys:
+4. Create a `.env` file in the root directory with your Alpaca API keys:
 
-   ```env
-   ALPACA_PAPER_KEY_ID=your_alpaca_api_key_id
-   ALPACA_PAPER_SECRET=your_alpaca_api_secret_key
-   ```
+```env
+ALPACA_LIVE_KEY_ID=your_alpaca_api_key
+ALPACA_LIVE_SECRET=your_alpaca_api_secret
+```
 
 ## Usage
 
 1. Run the Streamlit application:
 
-   ```bash
-   streamlit run main.py
-   ```
+```bash
+streamlit run main.py
+```
 
-2. In the web interface:
-   - Enter a stock symbol (e.g., `TSLA`).
-   - Select a start date and an end date for the data.
-   - Optionally, check "Use Volume Data" and "Use News Data" to include these features in the model.
-   - Adjust the training parameters in the sidebar.
-   - Click "Rerun Training" to train the model with the selected parameters.
+2. The application will open in your default web browser.
+
+3. Enter a stock symbol (e.g., AAPL, TSLA, MSFT).
+
+4. Select a date range for historical data.
+
+5. Choose the technical indicators you want to include in the model.
+
+6. Adjust model parameters in the sidebar if desired:
+
+   - Hidden Size: Dimension of the model's hidden layers
+   - Number of Layers: Depth of the transformer encoder
+   - Number of Heads: Attention heads in each encoder layer
+   - Dropout: Regularization parameter
+   - Number of Epochs: Training iterations
+   - Batch Size: Number of samples per gradient update
+   - Learning Rate: Step size for optimizer
+
+7. The model will automatically train on the selected data.
+
+8. View the model evaluation metrics and visualizations.
+
+9. Predict future stock prices by specifying the number of days to forecast.
+
+10. Download the trained model for external use if desired.
+
+## Project Structure
+
+- `main.py`: Main application entry point and Streamlit interface
+- `model.py`: Transformer model architecture and training logic
+- `data_utils.py`: Data loading, preprocessing, and feature engineering
+- `indicators.py`: Technical indicator calculations
+- `config.py`: Configuration and indicator definitions
+- `requirements.txt`: Required Python packages
 
 ## Model Architecture
 
-The model used in this application is a Transformer model implemented in PyTorch. The model consists of:
+This project uses a Transformer-based neural network, inspired by the architecture from the paper "Attention Is All You Need" by Vaswani et al. The model includes:
 
-- An embedding layer to convert the input features into a higher-dimensional space.
-- A Transformer encoder with multiple layers and attention heads.
-- A fully connected layer to produce the final output.
+- Input embedding layer
+- Multi-head self-attention mechanism
+- Position-wise feed-forward networks
+- Layer normalization
+- Residual connections
 
-## Data Fetching and Preprocessing
+The Transformer architecture is particularly well-suited for time series forecasting as it can efficiently capture long-range dependencies in sequential data without the limitations of recurrent architectures.
 
-The application fetches historical stock data from Yahoo Finance using the `yfinance` library and news articles from Alpaca's API. The data is normalized using MinMaxScaler from `sklearn`. News sentiment is analyzed using `TextBlob`.
+## Data Sources
 
-## Training
+- Stock price data: Yahoo Finance API via the `yfinance` library
+- News data: Alpaca Market Data API
 
-The application trains the Transformer model using the following parameters, adjustable in the Streamlit sidebar:
+## Customization
 
-- Hidden Size
-- Number of Layers
-- Number of Heads
-- Dropout
-- Number of Epochs
-- Batch Size
-- Learning Rate
+You can easily extend the application by:
 
-The training process includes:
+1. Adding new technical indicators in `indicators.py`
+2. Registering them in `config.py`
+3. Implementing new data preprocessing techniques in `data_utils.py`
+4. Modifying the Transformer architecture in `model.py`
 
-- Creating sequences from the normalized data.
-- Training the model using MSE loss and the Adam optimizer.
-- Displaying the training progress and visualizing the training and testing predictions.
+## Performance Considerations
 
-## Evaluation
-
-The model is evaluated on the testing set, and the predictions are visualized using Streamlit's line chart. The number of parameters (neurons) in the model is also displayed.
-
-## Contributing
-
-Contributions are welcome! Please fork the repository and submit a pull request with your changes.
+- Model training time depends on the selected date range, number of indicators, and training parameters.
+- Using GPU acceleration (CUDA) or MPS (on Apple Silicon) significantly improves training speed.
+- Larger models (more layers/hidden size) may improve accuracy but require more computational resources.
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Acknowledgements
 
-- [Streamlit](https://streamlit.io/)
-- [PyTorch](https://pytorch.org/)
-- [Yahoo Finance](https://finance.yahoo.com/)
-- [Alpaca](https://alpaca.markets/)
-- [TextBlob](https://textblob.readthedocs.io/)
+- [PyTorch](https://pytorch.org/) for the deep learning framework
+- [Streamlit](https://streamlit.io/) for the web application framework
+- [Yahoo Finance](https://finance.yahoo.com/) for stock price data
+- [Alpaca](https://alpaca.markets/) for news data
+- [TextBlob](https://textblob.readthedocs.io/) for sentiment analysis
 
 ---
