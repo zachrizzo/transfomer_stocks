@@ -9,3 +9,7 @@ textblob==0.17.1
 python-dotenv==1.0.0
 matplotlib==3.7.2
 plotly==5.16.1
+alpaca-py==0.13.3
+backtrader==1.9.78.123
+pyfolio==0.9.2
+tqdm==4.66.1
