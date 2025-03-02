@@ -16,18 +16,16 @@ class TransformerModel(nn.Module):
             nn.TransformerEncoderLayer(d_model=hidden_size, nhead=num_heads, dropout=dropout),
             num_layers=num_layers
         )
-        self.fc = nn.Linear(hidden_size, input_size)  # Output same size as input
+        self.fc = nn.Linear(hidden_size, 1)  # Output single value for 'Close' prediction
 
     def forward(self, x):
         x = x.float()
-        x = x.view(x.size(0), -1, self.input_size)
-        x = self.embedding(x)
-        x = x.permute(1, 0, 2)
-        x = self.transformer_encoder(x)
-        x = x.permute(1, 0, 2)
-        x = x[:, -1, :]
-        x = self.fc(x)
-        x = torch.sigmoid(x)  # Added sigmoid activation
+        x = self.embedding(x)  # [batch_size, seq_length, hidden_size]
+        x = x.permute(1, 0, 2)  # [seq_length, batch_size, hidden_size]
+        x = self.transformer_encoder(x)  # [seq_length, batch_size, hidden_size]
+        x = x.permute(1, 0, 2)  # [batch_size, seq_length, hidden_size]
+        x = x[:, -1, :]  # [batch_size, hidden_size]
+        x = self.fc(x)  # [batch_size, 1]
         return x
 
 def train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_layers, num_heads, dropout, num_epochs, batch_size, learning_rate, device):
@@ -35,8 +33,8 @@ def train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_l
         st.error("No data available for training. Please select at least one indicator.")
         return None
 
-    train_X = torch.tensor(train_X, dtype=torch.float32)
-    train_y = torch.tensor(train_y, dtype=torch.float32)
+    train_X_tensor = torch.tensor(train_X, dtype=torch.float32)
+    train_y_tensor = torch.tensor(train_y, dtype=torch.float32)
     test_X_tensor = torch.tensor(test_X, dtype=torch.float32).to(device)
     test_y_tensor = torch.tensor(test_y, dtype=torch.float32).to(device)
 
@@ -54,12 +52,12 @@ def train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_l
             break
 
         model.train()
-        permutation = torch.randperm(train_X.size(0))
+        permutation = torch.randperm(train_X_tensor.size(0))
 
-        for i in range(0, train_X.size(0), batch_size):
+        for i in range(0, train_X_tensor.size(0), batch_size):
             indices = permutation[i:i+batch_size]
-            batch_X = train_X[indices].to(device)
-            batch_y = train_y[indices].to(device)
+            batch_X = train_X_tensor[indices].to(device)
+            batch_y = train_y_tensor[indices].to(device)
 
             optimizer.zero_grad()
             outputs = model(batch_X)
@@ -69,35 +67,40 @@ def train_model(train_X, train_y, test_X, test_y, input_size, hidden_size, num_l
 
         # Update progress bar and text
         progress_bar.progress((epoch + 1) / num_epochs)
-        epoch_text.text(f"Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}")
+        epoch_text.text(f"Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.6f}")
 
     return model.state_dict()
 
 def predict_future(model_state_dict, last_sequence, num_days, close_scaler, input_size, hidden_size, num_layers, num_heads, dropout, device):
+    seq_length = last_sequence.shape[0]
+    if last_sequence.shape[1] != input_size:
+        st.error(f"Last sequence has incorrect shape: {last_sequence.shape}. Expected ({seq_length}, {input_size})")
+        return None
+
     model = TransformerModel(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, num_heads=num_heads, dropout=dropout)
     model.load_state_dict(model_state_dict)
     model.to(device)
     model.eval()
 
     future_predictions = []
-    current_sequence = last_sequence.clone()
+    current_sequence = last_sequence.clone().unsqueeze(0)  # Shape: (1, seq_length, input_size)
 
     for _ in range(num_days):
         with torch.no_grad():
-            prediction = model(current_sequence.unsqueeze(0))
+            prediction = model(current_sequence)
         close_prediction = prediction[0, 0].item()
         future_predictions.append(close_prediction)
 
         # Create a new datapoint
-        new_datapoint = torch.zeros(input_size, device=device)
-        new_datapoint[0] = close_prediction
+        new_datapoint = torch.zeros((1, 1, input_size), device=device)  # Shape: (1, 1, input_size)
+        new_datapoint[0, 0, 0] = close_prediction  # Set the 'Close' price
 
-        # Copy the last known values for other features
+        # For any additional features, copy the last known values
         if input_size > 1:
-            new_datapoint[1:] = current_sequence[-1, 1:]
+            new_datapoint[0, 0, 1:] = current_sequence[0, -1, 1:]
 
-        # Update the sequence
-        current_sequence = torch.cat((current_sequence[1:], new_datapoint.unsqueeze(0)), dim=0)
+        # Update the sequence for the next prediction
+        current_sequence = torch.cat((current_sequence[:, 1:, :], new_datapoint), dim=1)
 
     # Denormalize the predictions
     future_predictions = close_scaler.inverse_transform(np.array(future_predictions).reshape(-1, 1))
