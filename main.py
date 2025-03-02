@@ -129,16 +129,33 @@ def get_stock_inputs():
     with col3:
         end_date = st.date_input("End Date", datetime.now())
 
+    # Add a separator for training end date (which is also the backtest start date)
+    st.subheader("Data Separation")
+    st.info("To prevent data leakage, separate your data into training and backtesting periods.")
+
+    # Calculate a default training end date (60% of the data)
+    default_training_end = start_date + timedelta(days=int((end_date - start_date).days * 0.6))
+
+    training_end_date = st.date_input(
+        "Training End Date (Backtest Start Date)",
+        default_training_end,
+        help="Data before this date will be used for training, data after will be used for backtesting."
+    )
+
     # Validate inputs
     if start_date >= end_date:
         st.error("Start date must be before end date")
-        return None, None, None
+        return None, None, None, None
+
+    if start_date >= training_end_date or training_end_date >= end_date:
+        st.error("Training end date must be between start date and end date")
+        return None, None, None, None
 
     if not stockSymbol:
         st.error("Please enter a stock symbol")
-        return None, None, None
+        return None, None, None, None
 
-    return stockSymbol, start_date, end_date
+    return stockSymbol, start_date, training_end_date, end_date
 
 
 def select_indicators():
@@ -177,21 +194,26 @@ def select_indicators():
     return selected_indicators, use_volume, use_news
 
 
-def prepare_training_data(stock_data, news_data, selected_indicators, use_volume, use_news, close_scaler, seq_length=20):
+def prepare_training_data(stock_data, news_data, selected_indicators, use_volume, use_news, close_scaler, seq_length=20, training_end_idx=None):
     """Prepare the data for model training and evaluation."""
     # If no data is available, return empty arrays
     if stock_data.empty:
         return (np.array([]), np.array([]),
                 np.array([]), np.array([]),
-                pd.DataFrame(), None)
+                pd.DataFrame(), None, pd.DataFrame())
 
     # Drop rows with NaN values
     stock_data.dropna(inplace=True)
 
-    # Split into train and test sets
-    train_size = int(len(stock_data) * 0.8)
-    train_data = stock_data[:train_size]
-    test_data = stock_data[train_size:]
+    # Split into train and test sets based on the training_end_idx
+    if training_end_idx is not None:
+        train_data = stock_data[:training_end_idx]
+        test_data = stock_data[training_end_idx:]
+    else:
+        # Default split if no specific index is provided (80/20)
+        train_size = int(len(stock_data) * 0.8)
+        train_data = stock_data[:train_size]
+        test_data = stock_data[train_size:]
 
     # Preprocess data
     train_X, train_y = preprocess_data(train_data, news_data, selected_indicators, close_scaler, seq_length)
@@ -207,7 +229,10 @@ def prepare_training_data(stock_data, news_data, selected_indicators, use_volume
         if indicator['key'] not in ['volume', 'news']:
             input_size += indicator['size']
 
-    return train_X, train_y, test_X, test_y, test_data, input_size
+    # Return backtest_data separately for backtesting
+    backtest_data = stock_data[training_end_idx:] if training_end_idx is not None else None
+
+    return train_X, train_y, test_X, test_y, test_data, input_size, backtest_data
 
 
 def display_model_information(model, num_parameters):
@@ -338,35 +363,47 @@ def backtest_strategy(test_chart_data, initial_capital=10000, commission=0.001):
         backtest_data.loc[backtest_data['PredictedChangePercent'] < -threshold, 'Signal'] = -1  # Sell signal
 
     elif strategy_type == "Mean Reversion":
-        # Calculate rolling mean and standard deviation
-        backtest_data['RollingMean'] = backtest_data['Actual'].rolling(window=lookback).mean()
-        backtest_data['RollingStd'] = backtest_data['Actual'].rolling(window=lookback).std()
+        # Calculate rolling mean and standard deviation using only past data
+        backtest_data['RollingMean'] = backtest_data['Actual'].rolling(window=lookback, min_periods=1).mean()
+        backtest_data['RollingStd'] = backtest_data['Actual'].rolling(window=lookback, min_periods=1).std()
 
-        # Calculate z-score
-        backtest_data['ZScore'] = (backtest_data['Actual'] - backtest_data['RollingMean']) / backtest_data['RollingStd']
+        # Ensure we're not using future data by shifting signals
+        # Calculate z-score (current price relative to past rolling mean)
+        backtest_data['ZScore'] = (backtest_data['Actual'] - backtest_data['RollingMean']) / backtest_data['RollingStd'].replace(0, np.nan)
+
+        # Fill NaN values in ZScore with 0 to avoid generating signals with insufficient data
+        backtest_data['ZScore'] = backtest_data['ZScore'].fillna(0)
 
         # Generate signals based on z-score
-        backtest_data.loc[backtest_data['ZScore'] < -std_dev, 'Signal'] = 1  # Buy when price is below mean
-        backtest_data.loc[backtest_data['ZScore'] > std_dev, 'Signal'] = -1  # Sell when price is above mean
+        # We'll apply signals on the next day to avoid look-ahead bias
+        buy_signal = (backtest_data['ZScore'] < -std_dev)
+        sell_signal = (backtest_data['ZScore'] > std_dev)
+
+        # Apply signals
+        backtest_data.loc[buy_signal, 'Signal'] = 1  # Buy when price is below mean
+        backtest_data.loc[sell_signal, 'Signal'] = -1  # Sell when price is above mean
+
+        # Shift signals forward by one day to ensure we're trading based on past information
+        backtest_data['Signal'] = backtest_data['Signal'].shift(1).fillna(0)
 
     elif strategy_type == "Buy and Hold":
         # Simple buy and hold strategy
         backtest_data.loc[backtest_data.index[0], 'Signal'] = 1  # Buy on first day
 
     # Initialize portfolio metrics
-    backtest_data['Position'] = backtest_data['Signal'].shift(1).fillna(0).cumsum()
+    backtest_data['Position'] = backtest_data['Signal'].cumsum().clip(lower=0)  # Ensure no negative positions
     backtest_data['Holdings'] = backtest_data['Position'] * backtest_data['Actual']
 
     # Calculate costs for each trade
-    backtest_data['Trade'] = backtest_data['Position'].diff()
+    backtest_data['Trade'] = backtest_data['Position'].diff().fillna(backtest_data['Position'].iloc[0])
     backtest_data['TradeCost'] = abs(backtest_data['Trade'] * backtest_data['Actual'] * commission)
 
     # Calculate cash and portfolio value
-    backtest_data['Cash'] = initial_capital - (backtest_data['Holdings'] + backtest_data['TradeCost']).cumsum()
+    backtest_data['Cash'] = initial_capital - (backtest_data['Trade'] * backtest_data['Actual'] + backtest_data['TradeCost']).cumsum()
     backtest_data['PortfolioValue'] = backtest_data['Holdings'] + backtest_data['Cash']
 
     # Calculate daily returns
-    backtest_data['Returns'] = backtest_data['PortfolioValue'].pct_change()
+    backtest_data['Returns'] = backtest_data['PortfolioValue'].pct_change().fillna(0)
 
     # Calculate performance metrics
     total_trades = (backtest_data['Trade'] != 0).sum()
@@ -553,7 +590,7 @@ def main():
     model_params = create_sidebar_controls()
 
     # Get stock symbol and date range
-    stockSymbol, start_date, end_date = get_stock_inputs()
+    stockSymbol, start_date, training_end_date, end_date = get_stock_inputs()
     if not stockSymbol:
         return
 
@@ -566,6 +603,26 @@ def main():
     if stock_data.empty:
         st.error(f"No data found for symbol {stockSymbol}. Please check the symbol and try again.")
         return
+
+    # Find the index corresponding to the training end date
+    training_end_idx = None
+    if training_end_date:
+        # Convert training_end_date to datetime for comparison
+        training_end_datetime = pd.Timestamp(training_end_date)
+        # Find the closest date in the index that's less than or equal to training_end_date
+        training_end_idx = stock_data.index.get_indexer([training_end_datetime], method='ffill')[0]
+
+        # Visualize the data split
+        st.subheader("Data Split Visualization")
+        split_df = pd.DataFrame({
+            'Period': ['Training'] * training_end_idx + ['Backtesting'] * (len(stock_data) - training_end_idx),
+            'Close': stock_data['Close'].values.flatten()  # Flatten the 2D array to 1D
+        }, index=stock_data.index)
+
+        st.line_chart(split_df.pivot(columns='Period', values='Close'))
+
+        st.info(f"Training data: {training_end_idx} days ({training_end_idx/len(stock_data)*100:.1f}% of data)")
+        st.info(f"Backtesting data: {len(stock_data) - training_end_idx} days ({(len(stock_data) - training_end_idx)/len(stock_data)*100:.1f}% of data)")
 
     # Apply selected indicators to stock data
     for indicator in selected_indicators:
@@ -601,9 +658,10 @@ def main():
     stock_dates = stock_data.index.normalize()
     news_data = fetch_all_news(stockSymbol, stock_dates) if use_news else pd.DataFrame()
 
-    # Prepare data for training
-    train_X, train_y, test_X, test_y, test_data, input_size = prepare_training_data(
-        stock_data, news_data, selected_indicators, use_volume, use_news, close_scaler
+    # Prepare data for training with the training/backtesting split
+    train_X, train_y, test_X, test_y, test_data, input_size, backtest_data = prepare_training_data(
+        stock_data, news_data, selected_indicators, use_volume, use_news, close_scaler,
+        training_end_idx=training_end_idx
     )
 
     # Add input size to model parameters
@@ -616,6 +674,8 @@ def main():
         st.write(f"Input size: {input_size}")
         st.write(f"Training data shape: {train_X.shape if train_X.size > 0 else 'No data'}")
         st.write(f"Testing data shape: {test_X.shape if test_X.size > 0 else 'No data'}")
+        if backtest_data is not None:
+            st.write(f"Backtesting data shape: {backtest_data.shape}")
 
     # Check for NaNs in data
     if train_X.size == 0 or train_y.size == 0 or test_X.size == 0 or test_y.size == 0:
@@ -706,8 +766,43 @@ def main():
     # Evaluate model on test data
     test_chart_data = evaluate_model(model, test_X, test_y, close_scaler, device)
 
-    # Backtest strategy
-    backtest_data = backtest_strategy(test_chart_data)
+    # Backtest strategy using the separate backtesting data
+    if backtest_data is not None and not backtest_data.empty:
+        st.subheader("Backtesting on Separate Data")
+        st.info("Backtesting is performed on data that was NOT used for training to prevent data leakage.")
+
+        # Prepare backtesting data
+        backtest_X, backtest_y = preprocess_data(backtest_data, news_data, selected_indicators, close_scaler, 20)
+
+        if backtest_X.size > 0 and backtest_y.size > 0:
+            # Convert to PyTorch tensors
+            backtest_X_tensor = torch.tensor(backtest_X, dtype=torch.float32).to(device)
+            backtest_y_tensor = torch.tensor(backtest_y, dtype=torch.float32).to(device)
+
+            # Run prediction on backtesting data
+            model.eval()
+            with torch.no_grad():
+                backtest_predicted = model(backtest_X_tensor)
+                backtest_predicted = backtest_predicted.cpu().numpy()
+
+            # Prepare data for backtesting
+            backtest_actual_data = pd.DataFrame(close_scaler.inverse_transform(backtest_y), columns=['Actual'])
+            backtest_predicted_data = pd.DataFrame(close_scaler.inverse_transform(backtest_predicted), columns=['Predicted'])
+
+            # Concatenate the DataFrames
+            backtest_chart_data = pd.concat([backtest_actual_data.reset_index(drop=True), backtest_predicted_data], axis=1)
+
+            # Display backtesting chart
+            st.subheader("Backtesting Predictions")
+            st.line_chart(backtest_chart_data)
+
+            # Run backtesting strategy
+            backtest_data = backtest_strategy(backtest_chart_data)
+        else:
+            st.warning("Insufficient backtesting data after preprocessing. Skipping backtesting.")
+    else:
+        # Fallback to using test data for backtesting if no separate backtesting data is available
+        backtest_data = backtest_strategy(test_chart_data)
 
     # Predict future prices
     predict_future_prices(model_state_dict, test_X, test_data, close_scaler, model_params, device)
