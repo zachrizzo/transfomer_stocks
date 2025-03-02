@@ -1,106 +1,100 @@
 # Stock Price Prediction with Transformer Model
 
+A Streamlit application that uses a Transformer neural network to predict stock prices and backtest trading strategies based on model predictions.
+
+## Features
+
+- **Stock Data Loading**: Load historical stock data from Yahoo Finance for any ticker symbol
+- **Technical Analysis**: Apply various technical indicators to enhance prediction accuracy
+- **News Sentiment Analysis**: Incorporate news sentiment for more comprehensive predictions (requires Alpaca API keys)
+- **Transformer Model**: State-of-the-art neural network architecture for time series forecasting
+- **Customizable Parameters**: Adjust model architecture, training parameters, and more
+- **Interactive Visualizations**: Visualize predictions, model performance, and backtest results
+- **Strategy Backtesting**: Test different trading strategies based on model predictions
+
+## Backtesting Features
+
+The application now includes a comprehensive backtesting system that allows you to:
+
+1. **Simulate Trading Strategies**:
+
+   - Trend Following: Trade based on predicted price movements
+   - Mean Reversion: Trade based on deviations from historical averages
+   - Buy and Hold: Simple buy and hold strategy for comparison
+
+2. **Customize Backtesting Parameters**:
+
+   - Initial capital
+   - Commission rates
+   - Strategy-specific parameters (thresholds, lookback periods, etc.)
+
+3. **Performance Metrics**:
+
+   - Total return
+   - Sharpe ratio
+   - Maximum drawdown
+   - Win rate
+   - Comparison against buy & hold benchmark
+
+4. **Visualizations**:
+   - Portfolio value over time
+   - Drawdown analysis
+   - Detailed trade history
+
+## Model Performance
+
+The Transformer model shows promising results for stock price prediction:
+
+- Low training loss indicates good fit on historical data
+- Testing on out-of-sample data shows reasonable generalization
+- Model can capture both trend and some volatility patterns
+- Performance varies by stock and market conditions
+
+## Limitations and Considerations
+
+1. **Market Efficiency**: Markets are highly efficient, making consistent prediction challenging
+2. **Black Swan Events**: Unpredictable events can dramatically affect stock prices
+3. **Past ≠ Future**: Historical patterns don't guarantee future results
+4. **Risk Management**: Always employ proper risk management regardless of model predictions
+
+## Getting Started
+
+1. **Installation**:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Setting up API Keys** (optional for news data):
+   Create a `.env` file with your Alpaca API keys:
+
+   ```
+   ALPACA_LIVE_KEY_ID=your_key_here
+   ALPACA_LIVE_SECRET=your_secret_here
+   ```
+
+3. **Running the Application**:
+
+   ```bash
+   streamlit run main.py
+   ```
+
+4. **Using the App**:
+   - Select a stock symbol and date range
+   - Choose technical indicators to include
+   - Adjust model parameters as needed
+   - Train the model and view predictions
+   - Backtest trading strategies
+
+## Disclaimer
+
+This application is for educational purposes only. The predictions and backtesting results should not be used as financial advice. Always consult with a qualified financial advisor before making investment decisions.
+
 ![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.27+-green.svg)
 
-A sophisticated web application that uses a Transformer neural network model to predict stock prices. The application combines historical stock price data with technical indicators and news sentiment analysis to improve prediction accuracy.
-
 ![Application Screenshot](https://github.com/zachrizzo/transfomer_stocks/assets/placeholder/screenshot.png)
-
-## Features
-
-- Interactive web interface built with Streamlit
-- Transformer-based neural network architecture for time series forecasting
-- Support for multiple technical indicators:
-  - Simple Moving Average (SMA)
-  - Exponential Moving Average (EMA)
-  - Moving Average Convergence Divergence (MACD)
-  - Relative Strength Index (RSI)
-  - Bollinger Bands
-  - Average True Range (ATR)
-  - Average Directional Index (ADX)
-- Integration with news sentiment analysis to incorporate market sentiment
-- Real-time data fetching from Yahoo Finance
-- News data fetching from Alpaca API
-- Interactive model training with adjustable parameters
-- Future stock price prediction with visualization
-- Model download capability for external use
-
-## Installation
-
-### Prerequisites
-
-- Python 3.9 or higher
-- Alpaca API keys (for news data)
-
-### Setup
-
-1. Clone the repository:
-
-```bash
-git clone https://github.com/zachrizzo/transfomer_stocks.git
-cd transfomer_stocks
-```
-
-2. Create and activate a virtual environment (optional but recommended):
-
-```bash
-# Using conda
-conda create -n stock_prediction python=3.9
-conda activate stock_prediction
-
-# Or using venv
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-3. Install the required packages:
-
-```bash
-pip install -r requirements.txt
-```
-
-4. Create a `.env` file in the root directory with your Alpaca API keys:
-
-```env
-ALPACA_LIVE_KEY_ID=your_alpaca_api_key
-ALPACA_LIVE_SECRET=your_alpaca_api_secret
-```
-
-## Usage
-
-1. Run the Streamlit application:
-
-```bash
-streamlit run main.py
-```
-
-2. The application will open in your default web browser.
-
-3. Enter a stock symbol (e.g., AAPL, TSLA, MSFT).
-
-4. Select a date range for historical data.
-
-5. Choose the technical indicators you want to include in the model.
-
-6. Adjust model parameters in the sidebar if desired:
-
-   - Hidden Size: Dimension of the model's hidden layers
-   - Number of Layers: Depth of the transformer encoder
-   - Number of Heads: Attention heads in each encoder layer
-   - Dropout: Regularization parameter
-   - Number of Epochs: Training iterations
-   - Batch Size: Number of samples per gradient update
-   - Learning Rate: Step size for optimizer
-
-7. The model will automatically train on the selected data.
-
-8. View the model evaluation metrics and visualizations.
-
-9. Predict future stock prices by specifying the number of days to forecast.
-
-10. Download the trained model for external use if desired.
 
 ## Project Structure
 

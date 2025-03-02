@@ -276,6 +276,166 @@ def evaluate_model(model, test_X, test_y, close_scaler, device):
     st.subheader("Test Set Predictions")
     st.line_chart(test_chart_data)
 
+    # Return the test chart data for potential backtesting
+    return test_chart_data
+
+
+def backtest_strategy(test_chart_data, initial_capital=10000, commission=0.001):
+    """
+    Backtest a simple trading strategy based on model predictions.
+
+    Args:
+        test_chart_data: DataFrame with 'Actual' and 'Predicted' columns
+        initial_capital: Starting capital for the simulation
+        commission: Commission rate per trade (as a decimal)
+
+    Returns:
+        DataFrame with backtesting results
+    """
+    st.subheader("Strategy Backtesting")
+
+    if test_chart_data is None or test_chart_data.empty:
+        st.warning("No test data available for backtesting.")
+        return
+
+    # Backtesting controls
+    with st.expander("Backtesting Settings", expanded=True):
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            initial_capital = st.number_input("Initial Capital ($)", min_value=1000, max_value=1000000, value=10000, step=1000)
+
+        with col2:
+            commission = st.number_input("Commission Rate (%)", min_value=0.0, max_value=2.0, value=0.1, step=0.05) / 100
+
+        with col3:
+            strategy_type = st.selectbox(
+                "Strategy Type",
+                options=["Trend Following", "Mean Reversion", "Buy and Hold"],
+                index=0
+            )
+
+        # Additional strategy parameters
+        if strategy_type == "Trend Following":
+            threshold = st.slider("Price Change Threshold (%)", min_value=0.0, max_value=5.0, value=0.1, step=0.1) / 100
+        elif strategy_type == "Mean Reversion":
+            lookback = st.slider("Mean Lookback Period (days)", min_value=1, max_value=60, value=20, step=1)
+            std_dev = st.slider("Standard Deviation Threshold", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
+
+    # Create a copy of the test data
+    backtest_data = test_chart_data.copy()
+
+    # Generate trading signals based on selected strategy
+    backtest_data['Signal'] = 0  # 0: no action, 1: buy, -1: sell
+
+    if strategy_type == "Trend Following":
+        # Calculate predicted price changes (today's prediction vs tomorrow's prediction)
+        backtest_data['PredictedChange'] = backtest_data['Predicted'].shift(-1) - backtest_data['Predicted']
+        backtest_data['PredictedChangePercent'] = backtest_data['PredictedChange'] / backtest_data['Predicted']
+
+        # Generate signals based on predicted changes and threshold
+        backtest_data.loc[backtest_data['PredictedChangePercent'] > threshold, 'Signal'] = 1  # Buy signal
+        backtest_data.loc[backtest_data['PredictedChangePercent'] < -threshold, 'Signal'] = -1  # Sell signal
+
+    elif strategy_type == "Mean Reversion":
+        # Calculate rolling mean and standard deviation
+        backtest_data['RollingMean'] = backtest_data['Actual'].rolling(window=lookback).mean()
+        backtest_data['RollingStd'] = backtest_data['Actual'].rolling(window=lookback).std()
+
+        # Calculate z-score
+        backtest_data['ZScore'] = (backtest_data['Actual'] - backtest_data['RollingMean']) / backtest_data['RollingStd']
+
+        # Generate signals based on z-score
+        backtest_data.loc[backtest_data['ZScore'] < -std_dev, 'Signal'] = 1  # Buy when price is below mean
+        backtest_data.loc[backtest_data['ZScore'] > std_dev, 'Signal'] = -1  # Sell when price is above mean
+
+    elif strategy_type == "Buy and Hold":
+        # Simple buy and hold strategy
+        backtest_data.loc[backtest_data.index[0], 'Signal'] = 1  # Buy on first day
+
+    # Initialize portfolio metrics
+    backtest_data['Position'] = backtest_data['Signal'].shift(1).fillna(0).cumsum()
+    backtest_data['Holdings'] = backtest_data['Position'] * backtest_data['Actual']
+
+    # Calculate costs for each trade
+    backtest_data['Trade'] = backtest_data['Position'].diff()
+    backtest_data['TradeCost'] = abs(backtest_data['Trade'] * backtest_data['Actual'] * commission)
+
+    # Calculate cash and portfolio value
+    backtest_data['Cash'] = initial_capital - (backtest_data['Holdings'] + backtest_data['TradeCost']).cumsum()
+    backtest_data['PortfolioValue'] = backtest_data['Holdings'] + backtest_data['Cash']
+
+    # Calculate daily returns
+    backtest_data['Returns'] = backtest_data['PortfolioValue'].pct_change()
+
+    # Calculate performance metrics
+    total_trades = (backtest_data['Trade'] != 0).sum()
+    profitable_trades = ((backtest_data['Trade'] != 0) & (backtest_data['Returns'] > 0)).sum()
+    win_rate = profitable_trades / total_trades if total_trades > 0 else 0
+
+    final_value = backtest_data['PortfolioValue'].iloc[-1]
+    total_return = (final_value - initial_capital) / initial_capital * 100
+
+    # Calculate Sharpe ratio (assuming risk-free rate of 0)
+    sharpe_ratio = backtest_data['Returns'].mean() / backtest_data['Returns'].std() * np.sqrt(252) if backtest_data['Returns'].std() > 0 else 0
+
+    # Calculate max drawdown
+    backtest_data['Cumulative_Returns'] = (1 + backtest_data['Returns']).cumprod()
+    backtest_data['Cumulative_Max'] = backtest_data['Cumulative_Returns'].cummax()
+    backtest_data['Drawdown'] = (backtest_data['Cumulative_Returns'] / backtest_data['Cumulative_Max']) - 1
+    max_drawdown = backtest_data['Drawdown'].min() * 100
+
+    # Display performance metrics
+    col1, col2 = st.columns(2)
+    col1.metric("Total Return", f"{total_return:.2f}%")
+    col2.metric("Initial Capital", f"${initial_capital:.2f}", f"${final_value - initial_capital:.2f}")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Trades", f"{total_trades}")
+    col2.metric("Win Rate", f"{win_rate:.2%}")
+    col3.metric("Max Drawdown", f"{max_drawdown:.2f}%")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Sharpe Ratio", f"{sharpe_ratio:.4f}")
+    col2.metric("Final Portfolio Value", f"${final_value:.2f}")
+    col3.metric("Strategy Type", strategy_type)
+
+    # Compare with benchmark (buy and hold from day 1)
+    if strategy_type != "Buy and Hold":
+        first_price = backtest_data['Actual'].iloc[0]
+        last_price = backtest_data['Actual'].iloc[-1]
+        buy_hold_return = (last_price - first_price) / first_price * 100
+        buy_hold_value = initial_capital * (1 + buy_hold_return/100)
+
+        st.metric(
+            "Strategy vs Buy & Hold",
+            f"{total_return:.2f}% vs {buy_hold_return:.2f}%",
+            f"{total_return - buy_hold_return:.2f}%"
+        )
+
+    # Visualize portfolio value over time
+    st.subheader("Portfolio Value Over Time")
+    st.line_chart(backtest_data[['PortfolioValue']])
+
+    # Visualize drawdowns
+    st.subheader("Drawdowns")
+    st.area_chart(backtest_data[['Drawdown']])
+
+    # Show detailed backtest data
+    with st.expander("Detailed Backtest Data", expanded=False):
+        st.dataframe(backtest_data)
+
+    # Add ability to download backtest results
+    csv = backtest_data.to_csv(index=False)
+    st.download_button(
+        label="Download Backtest Results",
+        data=csv,
+        file_name="backtest_results.csv",
+        mime="text/csv",
+    )
+
+    return backtest_data
+
 
 def predict_future_prices(model_state_dict, test_X, test_data, close_scaler, model_params, device):
     """Predict future stock prices and display results."""
@@ -544,7 +704,10 @@ def main():
                 st.dataframe(news_data)
 
     # Evaluate model on test data
-    evaluate_model(model, test_X, test_y, close_scaler, device)
+    test_chart_data = evaluate_model(model, test_X, test_y, close_scaler, device)
+
+    # Backtest strategy
+    backtest_data = backtest_strategy(test_chart_data)
 
     # Predict future prices
     predict_future_prices(model_state_dict, test_X, test_data, close_scaler, model_params, device)
