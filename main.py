@@ -55,7 +55,7 @@ def setup_environment():
 
     # Initialize session state variables
     if 'stockSymbol' not in st.session_state:
-        st.session_state['stockSymbol'] = 'TSLA'
+        st.session_state['stockSymbol'] = 'AAPL'
 
     if 'stop_training' not in st.session_state:
         st.session_state['stop_training'] = False
@@ -124,10 +124,10 @@ def get_stock_inputs():
         stockSymbol = st.text_input("Enter Stock Symbol", st.session_state['stockSymbol'])
 
     with col2:
-        start_date = st.date_input("Start Date", datetime(2018, 1, 1))
+        start_date = st.date_input("Start Date", datetime(2020, 1, 1))
 
     with col3:
-        end_date = st.date_input("End Date", datetime.now() - timedelta(days=1))
+        end_date = st.date_input("End Date", datetime.now())
 
     # Validate inputs
     if start_date >= end_date:
@@ -177,7 +177,7 @@ def select_indicators():
     return selected_indicators, use_volume, use_news
 
 
-def prepare_training_data(stock_data, news_data, selected_indicators, use_news, close_scaler, seq_length=20):
+def prepare_training_data(stock_data, news_data, selected_indicators, use_volume, use_news, close_scaler, seq_length=20):
     """Prepare the data for model training and evaluation."""
     # If no data is available, return empty arrays
     if stock_data.empty:
@@ -338,8 +338,8 @@ def predict_future_prices(model_state_dict, test_X, test_data, close_scaler, mod
         st.line_chart(combined_df)
 
         # Calculate and display the predicted price change
-        price_change = future_predictions[-1] - last_actual_price
-        percent_change = (price_change / last_actual_price) * 100
+        price_change = float(future_predictions[-1] - last_actual_price)
+        percent_change = (price_change / float(last_actual_price)) * 100
 
         # Display price change metrics
         col1, col2 = st.columns(2)
@@ -351,7 +351,7 @@ def predict_future_prices(model_state_dict, test_X, test_data, close_scaler, mod
         )
         col2.metric(
             "Predicted final price",
-            f"${future_predictions[-1]:.2f}"
+            f"${float(future_predictions[-1]):.2f}"
         )
 
 
@@ -443,7 +443,7 @@ def main():
 
     # Prepare data for training
     train_X, train_y, test_X, test_y, test_data, input_size = prepare_training_data(
-        stock_data, news_data, selected_indicators, use_news, close_scaler
+        stock_data, news_data, selected_indicators, use_volume, use_news, close_scaler
     )
 
     # Add input size to model parameters

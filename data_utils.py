@@ -16,7 +16,7 @@ import os
 import logging
 import dotenv
 from typing import Tuple, List, Dict, Any, Optional, Union
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -43,14 +43,32 @@ def load_data(stockSymbol: str, start_date: Union[str, date], end_date: Union[st
     Returns:
         A tuple containing the stock data DataFrame and the close price scaler
     """
+    # Ensure end_date is not in the future
+    today = datetime.now().date()
+    if isinstance(end_date, str):
+        end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+        if end_date_obj > today:
+            end_date = today.strftime('%Y-%m-%d')
+    elif isinstance(end_date, date) and end_date > today:
+        end_date = today
+
     logger.info(f"Loading data for {stockSymbol} from {start_date} to {end_date}")
 
     try:
-        stock_data = yf.download(stockSymbol, start=start_date, end=end_date)
+        # Try to download with progress=False to avoid potential issues
+        stock_data = yf.download(stockSymbol, start=start_date, end=end_date, progress=False)
 
         if stock_data.empty:
-            st.error(f"No data found for symbol {stockSymbol}. Please check the symbol and try again.")
-            return pd.DataFrame(), None
+            # Try with a shorter date range as a fallback
+            fallback_start = datetime.now().date() - timedelta(days=365)
+            logger.warning(f"No data found for {stockSymbol} from {start_date} to {end_date}. Trying with shorter range: {fallback_start} to {today}")
+            st.warning(f"No data found for {stockSymbol} from {start_date} to {end_date}. Trying with shorter range: {fallback_start} to {today}")
+
+            stock_data = yf.download(stockSymbol, start=fallback_start, end=today, progress=False)
+
+            if stock_data.empty:
+                st.error(f"No data found for symbol {stockSymbol}. Please check the symbol and try again.")
+                return pd.DataFrame(), None
 
         # Normalize Close prices
         close_scaler = MinMaxScaler(feature_range=(0, 1))
@@ -67,6 +85,28 @@ def load_data(stockSymbol: str, start_date: Union[str, date], end_date: Union[st
     except Exception as e:
         st.error(f"Error loading data for {stockSymbol}: {str(e)}")
         logger.error(f"Error loading data: {str(e)}", exc_info=True)
+
+        # Try with a different API method as a last resort
+        try:
+            logger.info(f"Attempting to fetch {stockSymbol} data using Ticker object")
+            ticker = yf.Ticker(stockSymbol)
+            stock_data = ticker.history(start=start_date, end=end_date)
+
+            if not stock_data.empty:
+                # Normalize Close prices
+                close_scaler = MinMaxScaler(feature_range=(0, 1))
+                stock_data['Normalized_Close'] = close_scaler.fit_transform(stock_data['Close'].values.reshape(-1, 1))
+
+                # Normalize Volume if available
+                if 'Volume' in stock_data.columns:
+                    volume_scaler = MinMaxScaler(feature_range=(0, 1))
+                    stock_data['Normalized_Volume'] = volume_scaler.fit_transform(stock_data['Volume'].values.reshape(-1, 1))
+
+                logger.info(f"Successfully loaded data using Ticker object: {len(stock_data)} rows")
+                return stock_data, close_scaler
+        except Exception as ticker_error:
+            logger.error(f"Error using Ticker object: {str(ticker_error)}", exc_info=True)
+
         return pd.DataFrame(), None
 
 def preprocess_data(
