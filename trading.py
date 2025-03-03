@@ -136,6 +136,26 @@ class TradingEngine:
         # Create a copy of the data for backtesting
         backtest_data = data.copy()
 
+        # Ensure we have required columns
+        required_columns = ['Actual', 'Predicted']
+        for col in required_columns:
+            if col not in backtest_data.columns:
+                logger.error(f"Required column {col} not found in backtest data")
+                return None, None, {
+                    'Initial Capital': self.initial_capital,
+                    'Final Value': self.initial_capital,
+                    'Total Return': 0.0,
+                    'Sharpe Ratio': 0.0,
+                    'Max Drawdown': 0.0,
+                    'Win Rate': 0.0,
+                    'Total Trades': 0,
+                    'Winning Trades': 0,
+                    'Losing Trades': 0,
+                    'Avg Profit Per Trade': 0.0,
+                    'Avg Loss Per Trade': 0.0,
+                    'Profit Factor': 0.0
+                }
+
         # Ensure data has a proper DatetimeIndex
         if not isinstance(backtest_data.index, pd.DatetimeIndex):
             try:
@@ -170,8 +190,39 @@ class TradingEngine:
         backtest_data['DailyReturn'] = 0.0
 
         # Generate signals from strategy
-        signals = strategy(backtest_data, **strategy_params)
-        backtest_data['Signal'] = signals
+        try:
+            signals = strategy(backtest_data, **strategy_params)
+
+            # Ensure signals have the same length as backtest_data
+            if len(signals) != len(backtest_data):
+                logger.warning(f"Strategy returned {len(signals)} signals, but we need {len(backtest_data)}. Adjusting signals.")
+
+                if len(signals) > len(backtest_data):
+                    # Truncate signals if too long
+                    signals = signals[:len(backtest_data)]
+                elif len(signals) < len(backtest_data):
+                    # Extend signals with zeros if too short
+                    missing = len(backtest_data) - len(signals)
+                    signals = pd.concat([signals, pd.Series([0] * missing)])
+
+                # If signals is not a pandas Series with the same index, convert it
+                if not isinstance(signals, pd.Series) or not signals.index.equals(backtest_data.index):
+                    signals = pd.Series(signals.values, index=backtest_data.index)
+
+            # Convert signals to a Series with the same index as backtest_data if needed
+            if not isinstance(signals, pd.Series):
+                signals = pd.Series(signals, index=backtest_data.index)
+            elif not signals.index.equals(backtest_data.index):
+                signals = pd.Series(signals.values, index=backtest_data.index)
+
+            backtest_data['Signal'] = signals
+
+        except Exception as e:
+            logger.error(f"Error generating trading signals: {str(e)}", exc_info=True)
+            # Create default signals (all zeros)
+            backtest_data['Signal'] = 0
+            # Set first position to buy
+            backtest_data.iloc[0, backtest_data.columns.get_indexer(['Signal'])[0]] = 1
 
         # Add price slippage model (simulated by adjusting the execution price by a small random amount)
         np.random.seed(42)  # For reproducibility
@@ -472,7 +523,12 @@ class TradingEngine:
             'Avg Profit Pct': avg_profit_pct,
             'Max Drawdown': max_drawdown,
             'Sharpe Ratio': sharpe_ratio,
-            'Total Trades': len(trades_df)
+            'Total Trades': len(trades_df),
+            'Winning Trades': len(trades_df[trades_df['profit_loss'] > 0]),
+            'Losing Trades': len(trades_df[trades_df['profit_loss'] < 0]),
+            'Avg Profit Per Trade': avg_profit if len(trades_df) > 0 else 0.0,
+            'Avg Loss Per Trade': -avg_profit if len(trades_df[trades_df['profit_loss'] < 0]) > 0 else 0.0,
+            'Profit Factor': (len(trades_df[trades_df['profit_loss'] > 0]) / len(trades_df[trades_df['profit_loss'] < 0])) if len(trades_df[trades_df['profit_loss'] < 0]) > 0 else 0.0
         }
 
         return backtest_data, trades_df, metrics

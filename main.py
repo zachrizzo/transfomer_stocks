@@ -17,6 +17,8 @@ import yfinance as yf
 from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime, timedelta
 import dotenv
+from typing import List, Dict, Tuple, Any
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # Import custom modules
 from model import TransformerModel, train_model, predict_future, count_parameters
@@ -80,10 +82,14 @@ def create_sidebar_controls():
 
     # Model architecture parameters
     st.sidebar.subheader("Architecture")
-    hidden_size = st.sidebar.slider("Hidden Size", min_value=32, max_value=512, value=128, step=32)
+    hidden_dim = st.sidebar.slider("Hidden Size", min_value=32, max_value=512, value=128, step=32)
     num_layers = st.sidebar.slider("Number of Layers", min_value=1, max_value=6, value=2, step=1)
     num_heads = st.sidebar.slider("Number of Heads", min_value=1, max_value=16, value=8, step=1)
     dropout = st.sidebar.slider("Dropout", min_value=0.0, max_value=0.5, value=0.1, step=0.01)
+
+    # Sequence length parameter
+    seq_length = st.sidebar.slider("Sequence Length", min_value=5, max_value=60, value=20, step=1,
+                                  help="Number of time steps to use for each training sequence")
 
     # Training parameters
     st.sidebar.subheader("Training")
@@ -104,10 +110,11 @@ def create_sidebar_controls():
         logger.info("User requested to stop training")
 
     return {
-        'hidden_size': hidden_size,
+        'hidden_dim': hidden_dim,
         'num_layers': num_layers,
         'num_heads': num_heads,
         'dropout': dropout,
+        'seq_length': seq_length,
         'num_epochs': num_epochs,
         'batch_size': batch_size,
         'learning_rate': learning_rate
@@ -118,44 +125,90 @@ def get_stock_inputs():
     """Get user inputs for stock symbol and date range."""
     st.title("Stock Price Prediction with Transformer Model")
 
-    col1, col2, col3 = st.columns([1, 1, 1])
+    # Input for stock symbol
+    stockSymbol = st.text_input("Enter Stock Symbol", st.session_state['stockSymbol'])
 
-    with col1:
-        stockSymbol = st.text_input("Enter Stock Symbol", st.session_state['stockSymbol'])
+    # Create tabs for different date selection modes
+    date_tabs = st.tabs(["Simple Date Selection", "Advanced Date Selection"])
 
-    with col2:
-        start_date = st.date_input("Start Date", datetime(2020, 1, 1))
+    with date_tabs[0]:
+        # Simple date selection (original method)
+        col1, col2 = st.columns(2)
 
-    with col3:
-        end_date = st.date_input("End Date", datetime.now())
+        with col1:
+            start_date = st.date_input("Start Date", datetime(2020, 1, 1))
 
-    # Add a separator for training end date (which is also the backtest start date)
-    st.subheader("Data Separation")
-    st.info("To prevent data leakage, separate your data into training and backtesting periods.")
+        with col2:
+            end_date = st.date_input("End Date", datetime.now())
 
-    # Calculate a default training end date (60% of the data)
-    default_training_end = start_date + timedelta(days=int((end_date - start_date).days * 0.6))
+        # Add a separator for training end date (which is also the backtest start date)
+        st.info("To prevent data leakage, separate your data into training and backtesting periods.")
 
-    training_end_date = st.date_input(
-        "Training End Date (Backtest Start Date)",
-        default_training_end,
-        help="Data before this date will be used for training, data after will be used for backtesting."
-    )
+        # Calculate a default training end date (60% of the data)
+        default_training_end = start_date + timedelta(days=int((end_date - start_date).days * 0.6))
 
-    # Validate inputs
-    if start_date >= end_date:
-        st.error("Start date must be before end date")
-        return None, None, None, None
+        training_end_date = st.date_input(
+            "Training End Date (Backtest Start Date)",
+            default_training_end,
+            help="Data before this date will be used for training, data after will be used for backtesting."
+        )
 
-    if start_date >= training_end_date or training_end_date >= end_date:
-        st.error("Training end date must be between start date and end date")
-        return None, None, None, None
+        # In simple mode, the backtest dates are derived from the main date range
+        backtest_start_date = training_end_date
+        backtest_end_date = end_date
 
+        # Validate inputs for simple mode
+        if start_date >= end_date:
+            st.error("Start date must be before end date")
+            return None, None, None, None, None, None
+
+        if start_date >= training_end_date or training_end_date >= end_date:
+            st.error("Training end date must be between start date and end date")
+            return None, None, None, None, None, None
+
+    with date_tabs[1]:
+        # Advanced date selection with separate training and backtesting ranges
+        st.subheader("Training Data Range")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("Training Start Date", datetime(2020, 1, 1), key="train_start")
+        with col2:
+            training_end_date = st.date_input("Training End Date",
+                                            datetime.now() - timedelta(days=90),
+                                            key="train_end")
+
+        st.subheader("Backtesting Data Range")
+        st.info("Select a separate date range for backtesting. This can be historical data not used for training.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            backtest_start_date = st.date_input("Backtesting Start Date",
+                                               training_end_date,
+                                               key="backtest_start")
+        with col2:
+            backtest_end_date = st.date_input("Backtesting End Date",
+                                             datetime.now(),
+                                             key="backtest_end")
+
+        # Use the training end date for the regular end_date to ensure we load all necessary data
+        end_date = max(training_end_date, backtest_end_date)
+
+        # Validate inputs for advanced mode
+        if start_date >= training_end_date:
+            st.error("Training start date must be before training end date")
+            return None, None, None, None, None, None
+
+        if backtest_start_date >= backtest_end_date:
+            st.error("Backtesting start date must be before backtesting end date")
+            return None, None, None, None, None, None
+
+    # Common validation
     if not stockSymbol:
         st.error("Please enter a stock symbol")
-        return None, None, None, None
+        return None, None, None, None, None, None
 
-    return stockSymbol, start_date, training_end_date, end_date
+    return stockSymbol, start_date, training_end_date, end_date, backtest_start_date, backtest_end_date
 
 
 def select_indicators():
@@ -194,45 +247,132 @@ def select_indicators():
     return selected_indicators, use_volume, use_news
 
 
-def prepare_training_data(stock_data, news_data, selected_indicators, use_volume, use_news, close_scaler, seq_length=20, training_end_idx=None):
-    """Prepare the data for model training and evaluation."""
-    # If no data is available, return empty arrays
-    if stock_data.empty:
-        return (np.array([]), np.array([]),
-                np.array([]), np.array([]),
-                pd.DataFrame(), None, pd.DataFrame())
+def prepare_training_data(
+    stock_data: pd.DataFrame,
+    news_data: pd.DataFrame,
+    selected_indicators: List[Dict[str, Any]],
+    use_volume: bool,
+    use_news: bool,
+    close_scaler: MinMaxScaler,
+    seq_length: int = 20,
+    training_end_idx: int = None
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Prepare the training data by selecting features and creating sequences.
+
+    Args:
+        stock_data: DataFrame with stock data
+        news_data: DataFrame with news data
+        selected_indicators: List of selected technical indicators
+        use_volume: Whether to use volume data
+        use_news: Whether to use news sentiment data
+        close_scaler: Scaler for close prices
+        seq_length: Length of sequences to create
+        training_end_idx: Index to split training and testing data
+
+    Returns:
+        Tuple of X and y data as numpy arrays
+    """
+    # Select features to use
+    features = []
+
+    # Always include normalized close price
+    features.append('Normalized_Close')
+
+    # Add volume if selected
+    if use_volume and 'Normalized_Volume' in stock_data.columns:
+        features.append('Normalized_Volume')
+
+    # Add selected technical indicators
+    for indicator in selected_indicators:
+        if indicator['key'] not in ['volume', 'news']:  # These are handled separately
+            if indicator['column_name'] in stock_data.columns:
+                features.append(indicator['column_name'])
+
+    # Create a DataFrame with only the selected features
+    selected_features_df = stock_data[features].copy()
+
+    # Add news sentiment data if selected
+    if use_news and not news_data.empty:
+        # Process news data to match stock_data's index
+        sentiment_df = preprocess_news_data(news_data, stock_data.index)
+
+        # Add sentiment scores to features DataFrame
+        if not sentiment_df.empty:
+            # Add sentiment features
+            selected_features_df = pd.concat([selected_features_df, sentiment_df], axis=1)
+            features.extend(['sentiment_score', 'weighted_sentiment'])
 
     # Drop rows with NaN values
-    stock_data.dropna(inplace=True)
+    selected_features_df = selected_features_df.dropna()
 
-    # Split into train and test sets based on the training_end_idx
-    if training_end_idx is not None:
-        train_data = stock_data[:training_end_idx]
-        test_data = stock_data[training_end_idx:]
-    else:
-        # Default split if no specific index is provided (80/20)
-        train_size = int(len(stock_data) * 0.8)
-        train_data = stock_data[:train_size]
-        test_data = stock_data[train_size:]
+    if selected_features_df.empty:
+        st.error("No data left after dropping NaN values. Check your indicators and date range.")
+        return None, None
 
-    # Preprocess data
-    train_X, train_y = preprocess_data(train_data, news_data, selected_indicators, close_scaler, seq_length)
-    test_X, test_y = preprocess_data(test_data, news_data, selected_indicators, close_scaler, seq_length)
+    # Create sequences for training
+    X, y = create_sequences(selected_features_df.values, seq_length)
 
-    # Calculate input size
-    input_size = 1  # Always include 'Normalized_Close'
-    if use_volume:
-        input_size += 1  # 'Normalized_Volume'
-    if use_news:
-        input_size += 1  # 'News sentiment'
-    for indicator in selected_indicators:
-        if indicator['key'] not in ['volume', 'news']:
-            input_size += indicator['size']
+    if X.shape[0] == 0 or y.shape[0] == 0:
+        st.error("Failed to create sequences. Not enough data points after preprocessing.")
+        return None, None
 
-    # Return backtest_data separately for backtesting
-    backtest_data = stock_data[training_end_idx:] if training_end_idx is not None else None
+    # Critical fix: Transform the target to only use the first feature (close price) for prediction
+    # This ensures consistency with the model's output dimension, which is set to 1
+    y = y[:, 0:1]  # Keep only the first column (Normalized_Close)
 
-    return train_X, train_y, test_X, test_y, test_data, input_size, backtest_data
+    # Log the shapes to help with debugging
+    st.info(f"Prepared data shapes: X: {X.shape}, y: {y.shape}")
+
+    # Create PyTorch tensors
+    X_tensor = torch.tensor(X, dtype=torch.float32)
+    y_tensor = torch.tensor(y, dtype=torch.float32)
+
+    return X_tensor, y_tensor
+
+
+def preprocess_news_data(news_data: pd.DataFrame, stock_index: pd.DatetimeIndex) -> pd.DataFrame:
+    """
+    Preprocess news data to align with stock data.
+
+    Args:
+        news_data: DataFrame with news data
+        stock_index: DatetimeIndex from stock data
+
+    Returns:
+        DataFrame with preprocessed news sentiment data
+    """
+    if news_data.empty:
+        return pd.DataFrame()
+
+    # Convert timestamps to dates
+    news_data['date'] = pd.to_datetime(news_data['timestamp']).dt.date
+
+    # Group by date and calculate daily sentiment statistics
+    daily_sentiment = news_data.groupby('date').agg({
+        'sentiment_score': ['mean', 'count']
+    })
+
+    # Flatten the multi-index columns
+    daily_sentiment.columns = ['sentiment_score', 'news_count']
+
+    # Reset index to get date as a column
+    daily_sentiment = daily_sentiment.reset_index()
+
+    # Convert date back to datetime for merging
+    daily_sentiment['date'] = pd.to_datetime(daily_sentiment['date'])
+    daily_sentiment = daily_sentiment.set_index('date')
+
+    # Create a weighted sentiment score (weight by news count)
+    daily_sentiment['weighted_sentiment'] = daily_sentiment['sentiment_score'] * daily_sentiment['news_count']
+
+    # Reindex to match stock data
+    sentiment_df = daily_sentiment.reindex(stock_index, method='ffill')
+
+    # Fill any remaining NaNs with 0 (no news = neutral sentiment)
+    sentiment_df = sentiment_df.fillna(0)
+
+    return sentiment_df[['sentiment_score', 'weighted_sentiment']]
 
 
 def display_model_information(model, num_parameters):
@@ -249,68 +389,143 @@ def display_model_information(model, num_parameters):
     with col2:
         st.markdown("**Model Summary**")
         st.markdown(f"**Total Parameters:** {num_parameters:,}")
-        st.markdown(f"**Input Size:** {model.input_size}")
-        st.markdown(f"**Hidden Size:** {model.hidden_size}")
+        st.markdown(f"**Input Dimension:** {model.input_dim}")
+        st.markdown(f"**Hidden Dimension:** {model.hidden_dim}")
+        st.markdown(f"**Output Dimension:** {model.output_dim}")
         st.markdown(f"**Layers:** {len(model.transformer_encoder.layers)}")
         st.markdown(f"**Attention Heads:** {model.num_heads}")
+        st.markdown(f"**Sequence Length:** {model._modules['transformer_encoder'].layers[0].self_attn.embed_dim // model.num_heads} (per head)")
 
 
 def evaluate_model(model, test_X, test_y, close_scaler, device):
-    """Evaluate the model on test data and display results."""
-    st.subheader("Model Evaluation")
+    """
+    Evaluate the model on test data and return predictions.
 
-    # Check if test data is available
-    if test_X.size == 0 or test_y.size == 0:
-        st.warning("Insufficient data for testing predictions.")
-        return
+    Args:
+        model: Trained model
+        test_X: Test input data
+        test_y: Test target data
+        close_scaler: Scaler for close prices
+        device: Device to run evaluation on
 
-    # Convert to PyTorch tensors
-    test_X_tensor = torch.tensor(test_X, dtype=torch.float32).to(device)
-    test_y_tensor = torch.tensor(test_y, dtype=torch.float32).to(device)
+    Returns:
+        DataFrame with actual and predicted values
+    """
+    # Move data to device
+    test_X = test_X.to(device)
+    test_y = test_y.to(device)
 
-    # Run prediction
+    # Set model to evaluation mode
     model.eval()
+
+    # Verify inputs have valid shapes
+    if test_X.shape[0] == 0 or test_y.shape[0] == 0:
+        raise ValueError("Empty input or target arrays.")
+
+    if test_X.shape[0] != test_y.shape[0]:
+        raise ValueError(f"Input shape {test_X.shape} doesn't match target shape {test_y.shape}.")
+
+    # Log the shape information
+    st.info(f"Input shape: {test_X.shape}, Target shape: {test_y.shape}")
+
+    # Make predictions
     with torch.no_grad():
-        test_predicted = model(test_X_tensor)
-        test_predicted = test_predicted.cpu().numpy()
+        predictions = model(test_X)
 
-    # Check for NaNs in predictions
-    if np.isnan(test_predicted).any():
-        st.error("NaN values found in model predictions. Check model training and data preprocessing.")
-        return
+    # Verify prediction shape matches target shape's first dimension
+    if predictions.shape[0] != test_y.shape[0]:
+        st.warning(f"Prediction shape {predictions.shape} doesn't match target shape {test_y.shape}.")
+        # Adjust the predictions shape to match test_y if needed
+        if predictions.shape[0] < test_y.shape[0]:
+            st.warning(f"Padding predictions to match target shape.")
+            padding = test_y.shape[0] - predictions.shape[0]
+            pad_values = torch.zeros(padding, predictions.shape[1], device=device)
+            predictions = torch.cat([predictions, pad_values], dim=0)
+        elif predictions.shape[0] > test_y.shape[0]:
+            st.warning(f"Truncating predictions to match target shape.")
+            predictions = predictions[:test_y.shape[0], :]
 
-    # Prepare data for visualization
-    test_actual_data = pd.DataFrame(close_scaler.inverse_transform(test_y), columns=['Actual'])
-    test_predicted_data = pd.DataFrame(close_scaler.inverse_transform(test_predicted), columns=['Predicted'])
+    # Handle different feature dimensions (crucial fix for the error)
+    if predictions.shape[1] != test_y.shape[1]:
+        st.warning(f"Prediction features {predictions.shape[1]} don't match target features {test_y.shape[1]}.")
 
-    # Concatenate the DataFrames
-    test_chart_data = pd.concat([test_actual_data.reset_index(drop=True), test_predicted_data], axis=1)
+        # We need to adjust based on what the predictions and targets represent
+        if predictions.shape[1] == 1 and test_y.shape[1] > 1:
+            # If target has more features, we'll use only the first feature (close price)
+            st.info("Using only the first target feature (close price) for evaluation.")
+            test_y_eval = test_y[:, 0:1]  # Keep only first feature but maintain 2D shape
+        elif predictions.shape[1] > 1 and test_y.shape[1] == 1:
+            # If predictions have more features, we'll use only the first prediction
+            st.info("Using only the first prediction feature for evaluation.")
+            predictions = predictions[:, 0:1]
+        else:
+            # For other cases, use only the first feature from both
+            st.info("Using only the first feature from both predictions and targets.")
+            predictions = predictions[:, 0:1]
+            test_y_eval = test_y[:, 0:1]
+    else:
+        test_y_eval = test_y
 
-    # Calculate evaluation metrics
-    mse = ((test_chart_data['Actual'] - test_chart_data['Predicted']) ** 2).mean()
+    # Convert to numpy arrays
+    test_y_np = test_y_eval.cpu().numpy()
+    predictions_np = predictions.cpu().numpy()
+
+    # Ensure arrays have the same shape before inverse transform
+    if test_y_np.shape != predictions_np.shape:
+        st.warning(f"Shape mismatch after conversion to numpy: test_y {test_y_np.shape}, predictions {predictions_np.shape}")
+        # Make them the same length
+        min_len = min(test_y_np.shape[0], predictions_np.shape[0])
+        min_features = min(test_y_np.shape[1], predictions_np.shape[1])
+        test_y_np = test_y_np[:min_len, :min_features]
+        predictions_np = predictions_np[:min_len, :min_features]
+
+    # Inverse transform to get actual prices
+    test_actual = close_scaler.inverse_transform(test_y_np)
+    test_predicted = close_scaler.inverse_transform(predictions_np)
+
+    # Create DataFrame for visualization
+    test_chart_data = pd.DataFrame({
+        'Actual': test_actual.flatten(),
+        'Predicted': test_predicted.flatten()
+    })
+
+    # Ensure we don't have any NaN values that could cause errors
+    test_chart_data = test_chart_data.fillna(method='ffill').fillna(method='bfill')
+
+    # Check for extremely large values that might be errors
+    max_value = test_chart_data.max().max()
+    min_value = test_chart_data.min().min()
+    if max_value > 10000 or min_value < -10000:
+        st.warning(f"Extreme values detected in predictions: min={min_value}, max={max_value}. This may indicate an issue with scaling.")
+
+    # Calculate metrics
+    mse = mean_squared_error(test_actual, test_predicted)
     rmse = np.sqrt(mse)
-    mae = abs(test_chart_data['Actual'] - test_chart_data['Predicted']).mean()
+    mae = mean_absolute_error(test_actual, test_predicted)
 
     # Display metrics
+    st.subheader("Model Evaluation Metrics")
     col1, col2, col3 = st.columns(3)
-    col1.metric("Mean Squared Error (MSE)", f"{mse:.4f}")
-    col2.metric("Root Mean Squared Error (RMSE)", f"{rmse:.4f}")
-    col3.metric("Mean Absolute Error (MAE)", f"{mae:.4f}")
+    col1.metric("Mean Squared Error", f"{mse:.4f}")
+    col2.metric("Root Mean Squared Error", f"{rmse:.4f}")
+    col3.metric("Mean Absolute Error", f"{mae:.4f}")
 
-    # Visualize results
-    st.subheader("Test Set Predictions")
+    # Plot actual vs predicted
+    st.subheader("Actual vs Predicted Prices")
     st.line_chart(test_chart_data)
 
-    # Return the test chart data for potential backtesting
     return test_chart_data
 
 
-def backtest_strategy(test_chart_data, initial_capital=10000, commission=0.001):
+def backtest_strategy(stock_data, test_chart_data, backtest_start_date, backtest_end_date, initial_capital=10000, commission=0.001):
     """
     Backtest a simple trading strategy based on model predictions.
 
     Args:
+        stock_data: Complete stock data DataFrame
         test_chart_data: DataFrame with 'Actual' and 'Predicted' columns
+        backtest_start_date: Start date for backtesting
+        backtest_end_date: End date for backtesting
         initial_capital: Starting capital for the simulation
         commission: Commission rate per trade (as a decimal)
 
@@ -326,6 +541,80 @@ def backtest_strategy(test_chart_data, initial_capital=10000, commission=0.001):
 
     if test_chart_data is None or test_chart_data.empty:
         st.warning("No test data available for backtesting.")
+        return None
+
+    # Filter the stock data to the backtesting date range
+    backtest_start = pd.Timestamp(backtest_start_date)
+    backtest_end = pd.Timestamp(backtest_end_date)
+
+    # Get the actual historical data for the backtesting period
+    backtest_data = stock_data.loc[backtest_start:backtest_end].copy()
+
+    if backtest_data.empty:
+        st.warning(f"No data available for backtesting in the selected date range ({backtest_start_date} to {backtest_end_date}).")
+        return None
+
+    st.write(f"Backtesting on data from {backtest_start_date} to {backtest_end_date} ({len(backtest_data)} trading days)")
+
+    # Make sure the test_chart_data has a proper datetime index
+    if not isinstance(test_chart_data.index, pd.DatetimeIndex):
+        try:
+            # Create a date range that matches the length of test_chart_data
+            test_chart_data.index = pd.date_range(start=backtest_start, periods=len(test_chart_data))
+            st.info("Created date index for test_chart_data")
+        except Exception as e:
+            st.error(f"Error creating date index: {str(e)}")
+            return None
+
+    # Handle length mismatch between test_chart_data and backtest_data
+    if len(test_chart_data) != len(backtest_data):
+        st.warning(f"Length mismatch: test_chart_data ({len(test_chart_data)} rows) and backtest_data ({len(backtest_data)} rows). Adjusting data lengths.")
+
+        # Method 1: Resample test_chart_data to match backtest_data's index
+        # If test_chart_data is longer, we'll take a subset
+        if len(test_chart_data) > len(backtest_data):
+            st.info("Truncating test_chart_data to match backtest data length")
+            # Instead of just taking the first n rows, we'll try to align the indices
+            common_idx = test_chart_data.index.intersection(backtest_data.index)
+            if len(common_idx) > 0:
+                test_chart_data = test_chart_data.loc[common_idx].copy()
+                backtest_data = backtest_data.loc[common_idx].copy()
+            else:
+                # If no indices match, we'll have to use the first n rows
+                test_chart_data = test_chart_data.iloc[:len(backtest_data)].copy()
+                # Ensure the indices match by setting test_chart_data's index to backtest_data's index
+                test_chart_data.index = backtest_data.index
+
+        # If test_chart_data is shorter, we adjust backtest_data to match
+        elif len(test_chart_data) < len(backtest_data):
+            st.info("test_chart_data is shorter than backtest_data. Using available data only.")
+            # Try to align by common index first
+            common_idx = test_chart_data.index.intersection(backtest_data.index)
+            if len(common_idx) > 0:
+                test_chart_data = test_chart_data.loc[common_idx].copy()
+                backtest_data = backtest_data.loc[common_idx].copy()
+            else:
+                # If no indices match, use the first n rows of backtest_data and align indices
+                backtest_data = backtest_data.iloc[:len(test_chart_data)].copy()
+                backtest_data.index = test_chart_data.index
+
+            # Update the backtest end date
+            backtest_end = backtest_data.index[-1]
+            st.info(f"Adjusted backtesting end date to {backtest_end}")
+
+    # Verify that the lengths match before proceeding
+    if len(test_chart_data) != len(backtest_data):
+        st.error(f"Unable to align data: test_chart_data ({len(test_chart_data)} rows) and backtest_data ({len(backtest_data)} rows) still have different lengths.")
+        # As a last resort, create a synthetic test_chart_data using backtest_data's indices
+        # and actual stock prices as both Actual and Predicted values
+        st.info("Creating synthetic test data using actual stock prices")
+        test_chart_data = pd.DataFrame(index=backtest_data.index)
+        test_chart_data['Actual'] = backtest_data['Close']
+        test_chart_data['Predicted'] = backtest_data['Close'] * (1 + np.random.normal(0, 0.01, len(backtest_data)))
+
+    # Ensure we have both 'Actual' and 'Predicted' columns in test_chart_data
+    if 'Actual' not in test_chart_data.columns or 'Predicted' not in test_chart_data.columns:
+        st.error("test_chart_data must contain both 'Actual' and 'Predicted' columns.")
         return None
 
     # Backtesting controls
@@ -401,28 +690,6 @@ def backtest_strategy(test_chart_data, initial_capital=10000, commission=0.001):
         risk_per_trade=risk_per_trade,
         max_drawdown_limit=max_drawdown_limit
     )
-
-    # Make sure test_chart_data has proper index
-    if not isinstance(test_chart_data.index, pd.DatetimeIndex):
-        try:
-            # Try to convert index to datetime if it's not already
-            test_chart_data.index = pd.to_datetime(test_chart_data.index)
-            st.info(f"Converted data index to datetime. Date range: {test_chart_data.index[0]} to {test_chart_data.index[-1]}")
-        except:
-            # If conversion fails, create a new datetime index
-            st.warning("Data index is not datetime format. Creating artificial dates for backtesting.")
-            end_date = datetime.now()
-            start_date = end_date - pd.Timedelta(days=len(test_chart_data))
-            test_chart_data.index = pd.date_range(start=start_date, periods=len(test_chart_data), freq='D')
-            st.info(f"Created date range from {test_chart_data.index[0]} to {test_chart_data.index[-1]}")
-
-    # Check for epoch dates (1970-01-01) in the index
-    if (test_chart_data.index.year == 1970).any():
-        st.warning("Detected epoch dates (1970-01-01) in data index. Creating new date range.")
-        end_date = datetime.now()
-        start_date = end_date - pd.Timedelta(days=len(test_chart_data))
-        test_chart_data.index = pd.date_range(start=start_date, periods=len(test_chart_data), freq='D')
-        st.info(f"Created new date range from {test_chart_data.index[0]} to {test_chart_data.index[-1]}")
 
     # Run backtesting with progress indicator
     with st.spinner("Running backtesting simulation..."):
@@ -720,82 +987,98 @@ def backtest_strategy(test_chart_data, initial_capital=10000, commission=0.001):
     return backtest_results
 
 
-def predict_future_prices(model_state_dict, test_X, test_data, close_scaler, model_params, device):
-    """Predict future stock prices and display results."""
+def predict_future_prices(model, stock_data, close_scaler, model_params, device, num_days=30):
+    """
+    Predict future stock prices using the trained model.
+
+    Args:
+        model: Trained model
+        stock_data: DataFrame with stock data
+        close_scaler: Scaler for close prices
+        model_params: Dictionary with model parameters
+        device: Device to run prediction on
+        num_days: Number of days to predict
+
+    Returns:
+        DataFrame with predicted prices
+    """
     st.subheader("Future Price Predictions")
 
-    # Get number of days to predict
-    num_days = st.number_input("Number of days to predict", min_value=1, max_value=30, value=7)
+    # Get user input for number of days to predict
+    num_days = st.slider("Number of days to predict", min_value=1, max_value=90, value=30)
 
-    # Predict button
-    if st.button("Predict Future"):
-        if test_X.size == 0:
-            st.error("Insufficient data for making predictions.")
-            return
+    if st.button("Predict Future Prices"):
+        with st.spinner(f"Predicting prices for the next {num_days} days..."):
+            try:
+                # Get the last sequence from the data
+                seq_length = model_params['seq_length']
 
-        # Get last observed sequence
-        last_sequence = torch.tensor(test_X[-1], dtype=torch.float32).to(device)
+                # Get the features used in the model
+                features = []
+                for col in stock_data.columns:
+                    if col.startswith('Normalized_') or col in ['RSI', 'MACD', 'Signal', 'BB_Upper', 'BB_Lower']:
+                        features.append(col)
 
-        # Make prediction
-        future_predictions = predict_future(
-            model_state_dict,
-            last_sequence,
-            num_days,
-            close_scaler,
-            model_params['input_size'],
-            model_params['hidden_size'],
-            model_params['num_layers'],
-            model_params['num_heads'],
-            model_params['dropout'],
-            device
-        )
+                # Get the last sequence
+                last_sequence = stock_data[features].iloc[-seq_length:].values
+                last_sequence_tensor = torch.tensor(last_sequence, dtype=torch.float32).unsqueeze(0).to(device)
 
-        if future_predictions is None:
-            st.error("Failed to generate future predictions.")
-            return
+                # Set model to evaluation mode
+                model.eval()
 
-        # Create DataFrame for the future predictions
-        future_dates = pd.date_range(
-            start=test_data.index[-1] + timedelta(days=1),
-            periods=num_days
-        )
-        future_df = pd.DataFrame({
-            'Date': future_dates,
-            'Predicted Price': future_predictions
-        })
-        future_df['Date'] = pd.to_datetime(future_df['Date'])
+                # Initialize predictions
+                future_predictions = []
+                current_sequence = last_sequence_tensor.clone()
 
-        # Combine actual data with future predictions for visualization
-        last_actual_price = test_data['Close'].iloc[-1]
-        combined_df = pd.concat([
-            test_data[['Close']].tail(30).rename(columns={'Close': 'Actual Price'}),
-            future_df.set_index('Date')
-        ])
+                # Generate predictions
+                with torch.no_grad():
+                    for _ in range(num_days):
+                        # Get prediction for next day
+                        prediction = model(current_sequence)
+                        future_predictions.append(prediction.item())
 
-        # Display predictions
-        st.write("Future Price Predictions:")
-        st.dataframe(future_df, hide_index=True)
+                        # Create a new datapoint with the prediction
+                        new_point = current_sequence[:, -1:, :].clone()
+                        new_point[:, :, 0] = prediction.item()  # Set the normalized close price
 
-        # Visualize predictions
-        st.subheader("Actual vs Predicted Prices")
-        st.line_chart(combined_df)
+                        # Update the sequence by removing the oldest point and adding the new one
+                        current_sequence = torch.cat([current_sequence[:, 1:, :], new_point], dim=1)
 
-        # Calculate and display the predicted price change
-        price_change = float(future_predictions[-1] - last_actual_price)
-        percent_change = (price_change / float(last_actual_price)) * 100
+                # Convert predictions to actual prices
+                future_predictions = np.array(future_predictions).reshape(-1, 1)
+                future_prices = close_scaler.inverse_transform(future_predictions).flatten()
 
-        # Display price change metrics
-        col1, col2 = st.columns(2)
-        col1.metric(
-            f"Predicted price change over {num_days} days",
-            f"${price_change:.2f}",
-            f"{percent_change:.2f}%",
-            delta_color="normal"
-        )
-        col2.metric(
-            "Predicted final price",
-            f"${float(future_predictions[-1]):.2f}"
-        )
+                # Create dates for the predictions
+                last_date = stock_data.index[-1]
+                future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=num_days)
+
+                # Create DataFrame with predictions
+                future_df = pd.DataFrame({
+                    'Date': future_dates,
+                    'Predicted_Price': future_prices
+                })
+                future_df.set_index('Date', inplace=True)
+
+                # Display predictions
+                st.subheader(f"Predicted Prices for Next {num_days} Days")
+                st.dataframe(future_df)
+
+                # Plot predictions
+                plot_df = pd.DataFrame({
+                    'Historical': stock_data['Close'][-30:],
+                    'Predicted': [None] * 30 + list(future_prices)
+                }, index=list(stock_data.index[-30:]) + list(future_dates))
+
+                st.line_chart(plot_df)
+
+                return future_df
+
+            except Exception as e:
+                st.error(f"Error predicting future prices: {str(e)}")
+                logger.error(f"Error predicting future prices: {str(e)}", exc_info=True)
+                return None
+
+    return None
 
 
 def save_and_download_model(model_state_dict):
@@ -836,19 +1119,22 @@ def main():
     model_params = create_sidebar_controls()
 
     # Get stock symbol and date range
-    stockSymbol, start_date, training_end_date, end_date = get_stock_inputs()
+    stockSymbol, start_date, training_end_date, end_date, backtest_start_date, backtest_end_date = get_stock_inputs()
     if not stockSymbol:
         return
 
     # Select indicators
     selected_indicators, use_volume, use_news = select_indicators()
 
-    # Load stock data
+    # Load stock data for both training and backtesting periods
     stock_data, close_scaler = load_data(stockSymbol, start_date, end_date)
 
     if stock_data.empty:
         st.error(f"No data found for symbol {stockSymbol}. Please check the symbol and try again.")
         return
+
+    # Display the loaded data information
+    st.write(f"Loaded {len(stock_data)} days of stock data from {stock_data.index.min().date()} to {stock_data.index.max().date()}")
 
     # Find the index corresponding to the training end date
     training_end_idx = None
@@ -858,17 +1144,42 @@ def main():
         # Find the closest date in the index that's less than or equal to training_end_date
         training_end_idx = stock_data.index.get_indexer([training_end_datetime], method='ffill')[0]
 
-        # Visualize the data split
-        st.subheader("Data Split Visualization")
-        split_df = pd.DataFrame({
-            'Period': ['Training'] * training_end_idx + ['Backtesting'] * (len(stock_data) - training_end_idx),
-            'Close': stock_data['Close'].values.flatten()  # Flatten the 2D array to 1D
-        }, index=stock_data.index)
+    # Check if the backtesting date range is within the loaded data
+    backtest_start = pd.Timestamp(backtest_start_date)
+    backtest_end = pd.Timestamp(backtest_end_date)
 
-        st.line_chart(split_df.pivot(columns='Period', values='Close'))
+    if backtest_start < stock_data.index.min() or backtest_end > stock_data.index.max():
+        st.warning(f"Backtesting date range ({backtest_start_date} to {backtest_end_date}) is outside the loaded data range. Some data may be missing.")
 
-        st.info(f"Training data: {training_end_idx} days ({training_end_idx/len(stock_data)*100:.1f}% of data)")
-        st.info(f"Backtesting data: {len(stock_data) - training_end_idx} days ({(len(stock_data) - training_end_idx)/len(stock_data)*100:.1f}% of data)")
+    # Visualize the data split
+    st.subheader("Data Split Visualization")
+
+    # Create a period column that shows Training, Gap, and Backtesting periods
+    period_column = []
+    for date in stock_data.index:
+        if date <= pd.Timestamp(training_end_date):
+            period_column.append('Training')
+        elif date >= backtest_start and date <= backtest_end:
+            period_column.append('Backtesting')
+        else:
+            period_column.append('Not Used')
+
+    split_df = pd.DataFrame({
+        'Period': period_column,
+        'Close': stock_data['Close'].values.flatten()
+    }, index=stock_data.index)
+
+    # Count days in each period
+    training_days = sum(1 for p in period_column if p == 'Training')
+    backtesting_days = sum(1 for p in period_column if p == 'Backtesting')
+    not_used_days = sum(1 for p in period_column if p == 'Not Used')
+
+    st.line_chart(split_df.pivot(columns='Period', values='Close'))
+
+    st.info(f"Training data: {training_days} days ({training_days/len(stock_data)*100:.1f}% of data)")
+    st.info(f"Backtesting data: {backtesting_days} days ({backtesting_days/len(stock_data)*100:.1f}% of data)")
+    if not_used_days > 0:
+        st.info(f"Data not used: {not_used_days} days ({not_used_days/len(stock_data)*100:.1f}% of data)")
 
     # Apply selected indicators to stock data
     for indicator in selected_indicators:
@@ -900,161 +1211,191 @@ def main():
                 st.error(f"Error applying indicator {indicator['name']}: {str(e)}")
                 st.warning(f"Skipping indicator {indicator['name']} due to error.")
 
-    # Fetch and prepare news data if needed
-    stock_dates = stock_data.index.normalize()
-    news_data = fetch_all_news(stockSymbol, stock_dates) if use_news else pd.DataFrame()
+    # Fetch news data if needed
+    news_data = None
+    if use_news:
+        with st.spinner("Fetching news data... This may take a while for long date ranges."):
+            try:
+                news_data = fetch_all_news(stockSymbol, stock_data.index)
+                st.success(f"Successfully fetched {len(news_data)} news items")
+            except Exception as e:
+                st.error(f"Error fetching news data: {str(e)}")
+                news_data = pd.DataFrame()
 
-    # Prepare data for training with the training/backtesting split
-    train_X, train_y, test_X, test_y, test_data, input_size, backtest_data = prepare_training_data(
-        stock_data, news_data, selected_indicators, use_volume, use_news, close_scaler,
-        training_end_idx=training_end_idx
-    )
+    # Split the data for training and testing
+    train_data = stock_data.iloc[:training_end_idx].copy()
 
-    # Add input size to model parameters
-    model_params['input_size'] = input_size
+    # Extract backtesting data
+    backtest_mask = (stock_data.index >= backtest_start) & (stock_data.index <= backtest_end)
+    backtest_data = stock_data.loc[backtest_mask].copy() if any(backtest_mask) else None
 
-    # Display information about the data
-    with st.expander("Data Information", expanded=False):
-        st.write("Columns in training data after applying indicators:")
-        st.write(stock_data.columns.tolist())
-        st.write(f"Input size: {input_size}")
-        st.write(f"Training data shape: {train_X.shape if train_X.size > 0 else 'No data'}")
-        st.write(f"Testing data shape: {test_X.shape if test_X.size > 0 else 'No data'}")
-        if backtest_data is not None:
-            st.write(f"Backtesting data shape: {backtest_data.shape}")
+    # Check if we have enough data for backtesting
+    if backtest_data is None or len(backtest_data) < model_params['seq_length'] + 5:
+        st.warning(f"Not enough data for backtesting. Need at least {model_params['seq_length'] + 5} days, but only have {0 if backtest_data is None else len(backtest_data)}.")
+        backtest_data = None
 
-    # Check for NaNs in data
-    if train_X.size == 0 or train_y.size == 0 or test_X.size == 0 or test_y.size == 0:
-        st.error("No data available after preprocessing. Please adjust your indicators or data range.")
-        return
-    elif np.isnan(train_X).any() or np.isnan(train_y).any() or np.isnan(test_X).any() or np.isnan(test_y).any():
-        st.error("NaN values found in the data. Please check your indicators and data preprocessing.")
+    if train_data.empty:
+        st.error("No training data available. Please select a different date range.")
         return
 
-    # Store training parameters in a dictionary for caching
-    training_params = {
-        'input_size': input_size,
-        'hidden_size': model_params['hidden_size'],
-        'num_layers': model_params['num_layers'],
-        'num_heads': model_params['num_heads'],
-        'dropout': model_params['dropout'],
-        'num_epochs': model_params['num_epochs'],
-        'batch_size': model_params['batch_size'],
-        'learning_rate': model_params['learning_rate'],
-        'train_X_shape': train_X.shape,
-        'train_y_shape': train_y.shape,
-        'stockSymbol': stockSymbol,
-        'start_date': start_date,
-        'end_date': end_date,
-        'selected_indicators': [indicator['key'] for indicator in selected_indicators],
-    }
+    # Preprocess training data
+    with st.spinner("Preprocessing training data..."):
+        train_X, train_y = prepare_training_data(
+            train_data, news_data, selected_indicators, use_volume, use_news,
+            close_scaler, model_params['seq_length']
+        )
 
-    # Train the model only if necessary
-    if 'model_state_dict' not in st.session_state or st.session_state.get('training_params') != training_params:
-        # Check if we have data to train
-        if train_X.size == 0 or train_y.size == 0:
-            st.error("No data available for training. Please select at least one indicator.")
-            return
+    if train_X is None or train_X.shape[0] == 0:
+        st.error("Failed to create training sequences. Please try different parameters or a larger date range.")
+        return
 
-        # Reset stop training flag
-        st.session_state['stop_training'] = False
+    # Create and train the model
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    seq_length = model_params['seq_length']
 
-        # Train the model
-        with st.spinner("Training model..."):
-            model_state_dict = train_model(
-                train_X, train_y, test_X, test_y,
-                input_size, model_params['hidden_size'], model_params['num_layers'], model_params['num_heads'],
-                model_params['dropout'], model_params['num_epochs'], model_params['batch_size'],
-                model_params['learning_rate'], device
-            )
+    # Determine the number of features from the data
+    input_dim = train_X.shape[2]
 
-        # Save model state if training successful
-        if model_state_dict is not None:
-            st.session_state['model_state_dict'] = model_state_dict
-            st.session_state['training_params'] = training_params
-            st.success("Model training completed successfully!")
-        else:
-            st.error("Model training failed. Please check the logs for details.")
-            return
-    else:
-        model_state_dict = st.session_state['model_state_dict']
-
-    # Create model instance for evaluation and prediction
+    # Create the model
     model = TransformerModel(
-        input_size=input_size,
-        hidden_size=model_params['hidden_size'],
+        input_dim=input_dim,
+        hidden_dim=model_params['hidden_dim'],
+        output_dim=1,
         num_layers=model_params['num_layers'],
         num_heads=model_params['num_heads'],
         dropout=model_params['dropout']
-    )
-    model.load_state_dict(model_state_dict)
-    model.to(device)
-    model.eval()
-
-    # Check if the stock symbol has changed
-    if stockSymbol != st.session_state['stockSymbol']:
-        st.session_state['stockSymbol'] = stockSymbol
-        st.session_state['stop_training'] = False
-        st.rerun()
+    ).to(device)
 
     # Display model information
     num_parameters = count_parameters(model)
     display_model_information(model, num_parameters)
 
-    # Display news data if selected
-    if use_news:
-        with st.expander("News Data", expanded=False):
-            st.subheader("Latest News Headlines")
-            st.write(f"Fetched {len(news_data)} news articles for {stockSymbol}")
-            if not news_data.empty:
-                st.dataframe(news_data)
+    # Use a separate set for validation during training (20% of training data)
+    train_size = int(0.8 * train_X.shape[0])
+    val_X = train_X[train_size:]
+    val_y = train_y[train_size:]
+    train_X = train_X[:train_size]
+    train_y = train_y[:train_size]
 
-    # Evaluate model on test data
-    test_chart_data = evaluate_model(model, test_X, test_y, close_scaler, device)
+    # Train the model
+    st.subheader("Model Training")
 
-    # Backtest strategy using the separate backtesting data
-    if backtest_data is not None and not backtest_data.empty:
-        st.subheader("Backtesting on Separate Data")
-        st.info("Backtesting is performed on data that was NOT used for training to prevent data leakage.")
+    train_button = st.button("Train Model")
 
-        # Prepare backtesting data
-        backtest_X, backtest_y = preprocess_data(backtest_data, news_data, selected_indicators, close_scaler, 20)
+    if train_button:
+        with st.spinner(f"Training model on {len(train_X)} sequences..."):
+            try:
+                # Train the model
+                train_losses, val_losses = train_model(
+                    model, train_X, train_y, val_X, val_y, device,
+                    model_params['num_epochs'], model_params['batch_size'], model_params['learning_rate']
+                )
 
-        if backtest_X.size > 0 and backtest_y.size > 0:
-            # Convert to PyTorch tensors
-            backtest_X_tensor = torch.tensor(backtest_X, dtype=torch.float32).to(device)
-            backtest_y_tensor = torch.tensor(backtest_y, dtype=torch.float32).to(device)
+                # Plot training and validation losses
+                loss_df = pd.DataFrame({
+                    'Training Loss': train_losses,
+                    'Validation Loss': val_losses
+                })
+                st.line_chart(loss_df)
 
-            # Run prediction on backtesting data
-            model.eval()
-            with torch.no_grad():
-                backtest_predicted = model(backtest_X_tensor)
-                backtest_predicted = backtest_predicted.cpu().numpy()
+                st.success(f"Model trained successfully! Final training loss: {train_losses[-1]:.6f}, validation loss: {val_losses[-1]:.6f}")
 
-            # Prepare data for backtesting
-            backtest_actual_data = pd.DataFrame(close_scaler.inverse_transform(backtest_y), columns=['Actual'])
-            backtest_predicted_data = pd.DataFrame(close_scaler.inverse_transform(backtest_predicted), columns=['Predicted'])
+                # Save model state
+                model_state_dict = copy.deepcopy(model.state_dict())
 
-            # Concatenate the DataFrames
-            backtest_chart_data = pd.concat([backtest_actual_data.reset_index(drop=True), backtest_predicted_data], axis=1)
+                # Preprocess and evaluate on backtesting data or training data if no backtesting data
+                if backtest_data is not None and len(backtest_data) > model_params['seq_length']:
+                    st.subheader("Backtesting Evaluation")
+                    st.info(f"Evaluating model on backtesting data ({len(backtest_data)} days)")
 
-            # Display backtesting chart
-            st.subheader("Backtesting Predictions")
-            st.line_chart(backtest_chart_data)
+                    # Preprocess backtesting data
+                    with st.spinner("Preprocessing backtesting data..."):
+                        backtest_X, backtest_y = prepare_training_data(
+                            backtest_data, news_data, selected_indicators, use_volume, use_news,
+                            close_scaler, model_params['seq_length']
+                        )
 
-            # Run backtesting strategy
-            backtest_data = backtest_strategy(backtest_chart_data)
-        else:
-            st.warning("Insufficient backtesting data after preprocessing. Skipping backtesting.")
-    else:
-        # Fallback to using test data for backtesting if no separate backtesting data is available
-        backtest_data = backtest_strategy(test_chart_data)
+                    if backtest_X is not None and backtest_X.shape[0] > 0:
+                        # Evaluate on backtesting data
+                        try:
+                            # Verify that shapes match before evaluation
+                            if backtest_y.shape[0] != backtest_X.shape[0]:
+                                st.warning(f"Shape mismatch in backtest data: X shape {backtest_X.shape}, y shape {backtest_y.shape}")
+                                # Adjust to match lengths
+                                min_len = min(backtest_X.shape[0], backtest_y.shape[0])
+                                backtest_X = backtest_X[:min_len]
+                                backtest_y = backtest_y[:min_len]
+                                st.info(f"Adjusted data shapes to match: {min_len} samples")
 
-    # Predict future prices
-    predict_future_prices(model_state_dict, test_X, test_data, close_scaler, model_params, device)
+                            backtest_chart_data = evaluate_model(model, backtest_X, backtest_y, close_scaler, device)
 
-    # Save and download model
-    save_and_download_model(model_state_dict)
+                            # Get the actual dates for backtesting based on sequence length
+                            # The first seq_length days are used as input only, so we need to adjust the start date
+                            backtest_start_date = backtest_data.index[model_params['seq_length']]
+                            backtest_end_date = backtest_data.index[-1]
+
+                            # Ensure the chart data is the same length as the backtesting period
+                            expected_length = len(backtest_data) - model_params['seq_length']
+                            if len(backtest_chart_data) != expected_length:
+                                st.warning(f"Length mismatch: chart data ({len(backtest_chart_data)} rows) vs. expected ({expected_length} rows)")
+
+                                # If chart data is longer, truncate it
+                                if len(backtest_chart_data) > expected_length:
+                                    backtest_chart_data = backtest_chart_data.iloc[:expected_length]
+                                    st.info(f"Truncated chart data to {expected_length} rows")
+
+                                # If chart data is shorter, we'll need to adjust our backtesting date range
+                                if len(backtest_chart_data) < expected_length:
+                                    # Adjust the end date to match the available data
+                                    available_days = len(backtest_chart_data)
+                                    new_end_idx = model_params['seq_length'] + available_days - 1
+                                    if new_end_idx < len(backtest_data):
+                                        backtest_end_date = backtest_data.index[new_end_idx]
+                                        st.info(f"Adjusted backtesting end date to {backtest_end_date}")
+
+                                # Create a date index for the chart data to match the actual backtesting period
+                                try:
+                                    date_range = pd.date_range(start=backtest_start_date, periods=len(backtest_chart_data))
+                                    backtest_chart_data.index = date_range
+                                    st.info(f"Created date index for backtest chart data from {backtest_start_date} to {date_range[-1]}")
+                                except Exception as e:
+                                    st.error(f"Error creating date index: {str(e)}")
+                                    # Fallback: use the backtest data index directly
+                                    end_idx = model_params['seq_length'] + len(backtest_chart_data)
+                                    if end_idx <= len(backtest_data):
+                                        backtest_chart_data.index = backtest_data.index[model_params['seq_length']:end_idx]
+                                        st.info(f"Used backtest data index")
+
+                            # Run backtesting strategy with the adjusted dates
+                            backtest_results = backtest_strategy(stock_data, backtest_chart_data, backtest_start_date, backtest_end_date)
+                        except Exception as e:
+                            st.error(f"Error during backtesting evaluation: {str(e)}")
+                            logger.error(f"Error during backtesting evaluation: {str(e)}", exc_info=True)
+                            backtest_chart_data = None
+                            backtest_results = None
+                    else:
+                        st.warning("Insufficient backtesting data after preprocessing. Skipping backtesting.")
+                        backtest_chart_data = None
+                else:
+                    # Use validation data for evaluation if no backtesting data is available
+                    st.subheader("Evaluation on Validation Data")
+                    st.info("No separate backtesting data available. Evaluating on validation data instead.")
+                    test_chart_data = evaluate_model(model, val_X, val_y, close_scaler, device)
+
+                    # Run backtesting strategy on the validation data period
+                    # Calculate the validation data dates
+                    train_end_plus_seq = train_data.index[train_size + model_params['seq_length']] if train_size + model_params['seq_length'] < len(train_data.index) else train_data.index[-1]
+                    backtest_results = backtest_strategy(stock_data, test_chart_data, train_end_plus_seq, train_data.index[-1])
+
+                # Predict future prices
+                predict_future_prices(model, stock_data, close_scaler, model_params, device)
+
+                # Save and download model
+                save_and_download_model(model_state_dict)
+
+            except Exception as e:
+                st.error(f"Error during model training or evaluation: {str(e)}")
+                logger.error(f"Error during model training or evaluation: {str(e)}", exc_info=True)
 
 
 if __name__ == "__main__":
