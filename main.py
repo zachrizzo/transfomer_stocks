@@ -49,30 +49,47 @@ def setup_environment():
 
     # Set page title and configuration
     st.set_page_config(
-        page_title="Stock Prediction with Transformer Model",
-        page_icon="📈",
-        layout="wide",
-        initial_sidebar_state="expanded"
+        page_title="Stock Prediction with Transformers",
+        layout="wide"
     )
 
-    # Initialize session state variables
+    st.title("Stock Price Prediction with Transformer Models")
+
+    # Initialize session state for stock symbol if not already set
     if 'stockSymbol' not in st.session_state:
         st.session_state['stockSymbol'] = 'AAPL'
 
+    # Initialize session state for stop training flag
     if 'stop_training' not in st.session_state:
         st.session_state['stop_training'] = False
 
-    # Determine the compute device
-    if torch.backends.mps.is_available():
-        device = torch.device("mps")
-        logger.info("Using MPS (Metal Performance Shaders) for computation")
-    elif torch.cuda.is_available():
-        device = torch.device("cuda")
-        logger.info("Using CUDA for computation")
-    else:
-        device = torch.device("cpu")
-        logger.info("Using CPU for computation")
+    # Initialize session state for trained model and parameters
+    if 'trained_model' not in st.session_state:
+        st.session_state['trained_model'] = None
 
+    if 'model_state_dict' not in st.session_state:
+        st.session_state['model_state_dict'] = None
+
+    # Initialize session state for training status
+    if 'model_trained' not in st.session_state:
+        st.session_state['model_trained'] = False
+
+    # Initialize session state for backtesting data
+    if 'backtest_chart_data' not in st.session_state:
+        st.session_state['backtest_chart_data'] = None
+
+    if 'backtest_data' not in st.session_state:
+        st.session_state['backtest_data'] = None
+
+    # Initialize session state for backtesting parameters
+    if 'backtest_strategy_type' not in st.session_state:
+        st.session_state['backtest_strategy_type'] = "Trend Following"
+
+    if 'backtest_params' not in st.session_state:
+        st.session_state['backtest_params'] = {}
+
+    # Get the device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     return device
 
 
@@ -543,12 +560,23 @@ def backtest_strategy(stock_data, test_chart_data, backtest_start_date, backtest
         st.warning("No test data available for backtesting.")
         return None
 
+    # Save backtesting data to session state if needed
+    if st.session_state['backtest_chart_data'] is None:
+        st.session_state['backtest_chart_data'] = test_chart_data.copy()
+    else:
+        # Use existing data if available and not in training mode
+        test_chart_data = st.session_state['backtest_chart_data'].copy()
+
     # Filter the stock data to the backtesting date range
     backtest_start = pd.Timestamp(backtest_start_date)
     backtest_end = pd.Timestamp(backtest_end_date)
 
     # Get the actual historical data for the backtesting period
     backtest_data = stock_data.loc[backtest_start:backtest_end].copy()
+
+    # Store backtest data in session state for reuse
+    if st.session_state['backtest_data'] is None:
+        st.session_state['backtest_data'] = backtest_data.copy()
 
     if backtest_data.empty:
         st.warning(f"No data available for backtesting in the selected date range ({backtest_start_date} to {backtest_end_date}).")
@@ -628,11 +656,16 @@ def backtest_strategy(stock_data, test_chart_data, backtest_start_date, backtest
             commission = st.number_input("Commission Rate (%)", min_value=0.0, max_value=2.0, value=0.1, step=0.05) / 100
 
         with col3:
+            # Use session state to keep track of the selected strategy type
             strategy_type = st.selectbox(
                 "Strategy Type",
                 options=["Trend Following", "Mean Reversion", "Combined Strategy", "Buy and Hold"],
-                index=0
+                index=["Trend Following", "Mean Reversion", "Combined Strategy", "Buy and Hold"].index(
+                    st.session_state['backtest_strategy_type']
+                )
             )
+            # Store the selected strategy type in session state
+            st.session_state['backtest_strategy_type'] = strategy_type
 
         # Risk management settings
         col1, col2 = st.columns(2)
@@ -642,29 +675,41 @@ def backtest_strategy(stock_data, test_chart_data, backtest_start_date, backtest
         with col2:
             max_drawdown_limit = st.slider("Max Drawdown Limit (%)", min_value=5.0, max_value=50.0, value=25.0, step=5.0) / 100
 
-        # Additional strategy parameters
+        # Additional strategy parameters based on stored values
+        strategy_params = {}
+
         if strategy_type == "Trend Following":
-            threshold = st.slider("Price Change Threshold (%)", min_value=0.0, max_value=5.0, value=0.1, step=0.1) / 100
+            # Get stored value if exists, otherwise use default
+            default_threshold = st.session_state['backtest_params'].get('threshold', 0.1) * 100
+            threshold = st.slider("Price Change Threshold (%)", min_value=0.0, max_value=5.0, value=default_threshold, step=0.1) / 100
             strategy_params = {'threshold': threshold}
             strategy_func = trend_following_strategy
 
         elif strategy_type == "Mean Reversion":
             col1, col2 = st.columns(2)
             with col1:
-                lookback = st.slider("Mean Lookback Period (days)", min_value=1, max_value=60, value=20, step=1)
+                default_lookback = st.session_state['backtest_params'].get('lookback', 20)
+                lookback = st.slider("Mean Lookback Period (days)", min_value=1, max_value=60, value=default_lookback, step=1)
             with col2:
-                std_dev = st.slider("Standard Deviation Threshold", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
+                default_std_dev = st.session_state['backtest_params'].get('std_dev', 1.5)
+                std_dev = st.slider("Standard Deviation Threshold", min_value=0.5, max_value=3.0, value=default_std_dev, step=0.1)
             strategy_params = {'lookback': lookback, 'std_dev': std_dev}
             strategy_func = mean_reversion_strategy
 
         elif strategy_type == "Combined Strategy":
             col1, col2 = st.columns(2)
             with col1:
-                threshold = st.slider("Trend Threshold (%)", min_value=0.0, max_value=5.0, value=0.1, step=0.1) / 100
-                lookback = st.slider("MR Lookback Period (days)", min_value=1, max_value=60, value=20, step=1)
+                default_threshold = st.session_state['backtest_params'].get('trend_threshold', 0.1) * 100
+                threshold = st.slider("Trend Threshold (%)", min_value=0.0, max_value=5.0, value=default_threshold, step=0.1) / 100
+
+                default_lookback = st.session_state['backtest_params'].get('mr_lookback', 20)
+                lookback = st.slider("MR Lookback Period (days)", min_value=1, max_value=60, value=default_lookback, step=1)
             with col2:
-                std_dev = st.slider("MR Std Dev Threshold", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
-                weight_trend = st.slider("Trend Weight", min_value=0.0, max_value=1.0, value=0.5, step=0.1)
+                default_std_dev = st.session_state['backtest_params'].get('mr_std_dev', 1.5)
+                std_dev = st.slider("MR Std Dev Threshold", min_value=0.5, max_value=3.0, value=default_std_dev, step=0.1)
+
+                default_weight = st.session_state['backtest_params'].get('weight_trend', 0.5)
+                weight_trend = st.slider("Trend Weight", min_value=0.0, max_value=1.0, value=default_weight, step=0.1)
             strategy_params = {
                 'trend_threshold': threshold,
                 'mr_lookback': lookback,
@@ -681,6 +726,9 @@ def backtest_strategy(stock_data, test_chart_data, backtest_start_date, backtest
                 return signals
             strategy_func = buy_and_hold_strategy
             strategy_params = {}
+
+        # Store the strategy parameters in session state
+        st.session_state['backtest_params'] = strategy_params
 
     # Initialize trading engine with settings
     trading_engine = TradingEngine(
@@ -1109,6 +1157,11 @@ def save_and_download_model(model_state_dict):
             )
 
 
+def train_model_callback():
+    """Callback for the train model button"""
+    st.session_state['model_trained'] = True
+
+
 def main():
     """Main application function."""
     # Setup environment and get device
@@ -1234,11 +1287,14 @@ def main():
         st.warning(f"Not enough data for backtesting. Need at least {model_params['seq_length'] + 5} days, but only have {0 if backtest_data is None else len(backtest_data)}.")
         backtest_data = None
 
+    # Save backtest data to session state
+    st.session_state['backtest_data'] = backtest_data
+
     if train_data.empty:
         st.error("No training data available. Please select a different date range.")
         return
 
-    # Preprocess training data
+    # Preprocess training data (this needs to be done each time)
     with st.spinner("Preprocessing training data..."):
         train_X, train_y = prepare_training_data(
             train_data, news_data, selected_indicators, use_volume, use_news,
@@ -1277,11 +1333,19 @@ def main():
     train_X = train_X[:train_size]
     train_y = train_y[:train_size]
 
-    # Train the model
+    # Training section
     st.subheader("Model Training")
 
-    train_button = st.button("Train Model")
+    # Use a callback for the train button to set state
+    train_button = st.button("Train Model", on_click=train_model_callback)
 
+    # Load trained model if available
+    if st.session_state['trained_model'] is not None and not train_button:
+        model = st.session_state['trained_model']
+        model_state_dict = st.session_state['model_state_dict']
+        st.success("Using previously trained model. Click 'Train Model' if you want to retrain.")
+
+    # Handle model training
     if train_button:
         with st.spinner(f"Training model on {len(train_X)} sequences..."):
             try:
@@ -1303,12 +1367,15 @@ def main():
                 # Save model state
                 model_state_dict = copy.deepcopy(model.state_dict())
 
-                # Preprocess and evaluate on backtesting data or training data if no backtesting data
-                if backtest_data is not None and len(backtest_data) > model_params['seq_length']:
-                    st.subheader("Backtesting Evaluation")
-                    st.info(f"Evaluating model on backtesting data ({len(backtest_data)} days)")
+                # Store model and its state dict in session state
+                st.session_state['trained_model'] = model
+                st.session_state['model_state_dict'] = model_state_dict
 
-                    # Preprocess backtesting data
+                # Reset backtesting data when model is retrained
+                st.session_state['backtest_chart_data'] = None
+
+                # Process backtesting data if available
+                if backtest_data is not None and len(backtest_data) > model_params['seq_length']:
                     with st.spinner("Preprocessing backtesting data..."):
                         backtest_X, backtest_y = prepare_training_data(
                             backtest_data, news_data, selected_indicators, use_volume, use_news,
@@ -1316,86 +1383,57 @@ def main():
                         )
 
                     if backtest_X is not None and backtest_X.shape[0] > 0:
-                        # Evaluate on backtesting data
                         try:
-                            # Verify that shapes match before evaluation
+                            # Ensure shapes match
                             if backtest_y.shape[0] != backtest_X.shape[0]:
-                                st.warning(f"Shape mismatch in backtest data: X shape {backtest_X.shape}, y shape {backtest_y.shape}")
-                                # Adjust to match lengths
                                 min_len = min(backtest_X.shape[0], backtest_y.shape[0])
                                 backtest_X = backtest_X[:min_len]
                                 backtest_y = backtest_y[:min_len]
-                                st.info(f"Adjusted data shapes to match: {min_len} samples")
 
+                            # Evaluate on backtesting data
                             backtest_chart_data = evaluate_model(model, backtest_X, backtest_y, close_scaler, device)
-
-                            # Get the actual dates for backtesting based on sequence length
-                            # The first seq_length days are used as input only, so we need to adjust the start date
-                            backtest_start_date = backtest_data.index[model_params['seq_length']]
-                            backtest_end_date = backtest_data.index[-1]
-
-                            # Ensure the chart data is the same length as the backtesting period
-                            expected_length = len(backtest_data) - model_params['seq_length']
-                            if len(backtest_chart_data) != expected_length:
-                                st.warning(f"Length mismatch: chart data ({len(backtest_chart_data)} rows) vs. expected ({expected_length} rows)")
-
-                                # If chart data is longer, truncate it
-                                if len(backtest_chart_data) > expected_length:
-                                    backtest_chart_data = backtest_chart_data.iloc[:expected_length]
-                                    st.info(f"Truncated chart data to {expected_length} rows")
-
-                                # If chart data is shorter, we'll need to adjust our backtesting date range
-                                if len(backtest_chart_data) < expected_length:
-                                    # Adjust the end date to match the available data
-                                    available_days = len(backtest_chart_data)
-                                    new_end_idx = model_params['seq_length'] + available_days - 1
-                                    if new_end_idx < len(backtest_data):
-                                        backtest_end_date = backtest_data.index[new_end_idx]
-                                        st.info(f"Adjusted backtesting end date to {backtest_end_date}")
-
-                                # Create a date index for the chart data to match the actual backtesting period
-                                try:
-                                    date_range = pd.date_range(start=backtest_start_date, periods=len(backtest_chart_data))
-                                    backtest_chart_data.index = date_range
-                                    st.info(f"Created date index for backtest chart data from {backtest_start_date} to {date_range[-1]}")
-                                except Exception as e:
-                                    st.error(f"Error creating date index: {str(e)}")
-                                    # Fallback: use the backtest data index directly
-                                    end_idx = model_params['seq_length'] + len(backtest_chart_data)
-                                    if end_idx <= len(backtest_data):
-                                        backtest_chart_data.index = backtest_data.index[model_params['seq_length']:end_idx]
-                                        st.info(f"Used backtest data index")
-
-                            # Run backtesting strategy with the adjusted dates
-                            backtest_results = backtest_strategy(stock_data, backtest_chart_data, backtest_start_date, backtest_end_date)
+                            st.session_state['backtest_chart_data'] = backtest_chart_data.copy()
                         except Exception as e:
-                            st.error(f"Error during backtesting evaluation: {str(e)}")
-                            logger.error(f"Error during backtesting evaluation: {str(e)}", exc_info=True)
-                            backtest_chart_data = None
-                            backtest_results = None
+                            st.error(f"Error preprocessing backtesting data: {str(e)}")
                     else:
                         st.warning("Insufficient backtesting data after preprocessing. Skipping backtesting.")
                         backtest_chart_data = None
                 else:
-                    # Use validation data for evaluation if no backtesting data is available
-                    st.subheader("Evaluation on Validation Data")
-                    st.info("No separate backtesting data available. Evaluating on validation data instead.")
+                    # Use validation data if no backtesting data
                     test_chart_data = evaluate_model(model, val_X, val_y, close_scaler, device)
-
-                    # Run backtesting strategy on the validation data period
-                    # Calculate the validation data dates
-                    train_end_plus_seq = train_data.index[train_size + model_params['seq_length']] if train_size + model_params['seq_length'] < len(train_data.index) else train_data.index[-1]
-                    backtest_results = backtest_strategy(stock_data, test_chart_data, train_end_plus_seq, train_data.index[-1])
-
-                # Predict future prices
-                predict_future_prices(model, stock_data, close_scaler, model_params, device)
-
-                # Save and download model
-                save_and_download_model(model_state_dict)
+                    st.session_state['backtest_chart_data'] = test_chart_data.copy()
 
             except Exception as e:
-                st.error(f"Error during model training or evaluation: {str(e)}")
-                logger.error(f"Error during model training or evaluation: {str(e)}", exc_info=True)
+                st.error(f"Error during model training: {str(e)}")
+                st.session_state['model_trained'] = False
+                return
+
+    # Always show backtesting section if we have a trained model
+    if st.session_state['trained_model'] is not None:
+        if backtest_data is not None and st.session_state['backtest_chart_data'] is not None:
+            # Adjust dates for backtesting
+            backtest_start_date = backtest_data.index[model_params['seq_length']]
+            backtest_end_date = backtest_data.index[-1]
+
+            # Run backtest with stored chart data
+            backtest_results = backtest_strategy(
+                stock_data,
+                st.session_state['backtest_chart_data'],
+                backtest_start_date,
+                backtest_end_date
+            )
+        elif st.session_state['backtest_chart_data'] is not None:
+            # Use validation data dates
+            train_end_plus_seq = train_data.index[train_size + model_params['seq_length']] if train_size + model_params['seq_length'] < len(train_data.index) else train_data.index[-1]
+            backtest_results = backtest_strategy(stock_data, st.session_state['backtest_chart_data'], train_end_plus_seq, train_data.index[-1])
+
+        # Only show future predictions if we have a trained model
+        if st.session_state['trained_model'] is not None:
+            predict_future_prices(st.session_state['trained_model'], stock_data, close_scaler, model_params, device)
+
+            # Show download model button if we have trained a model
+            if st.session_state['model_state_dict'] is not None:
+                save_and_download_model(st.session_state['model_state_dict'])
 
 
 if __name__ == "__main__":
