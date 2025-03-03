@@ -17,6 +17,10 @@ import logging
 import dotenv
 from typing import Tuple, List, Dict, Any, Optional, Union
 from datetime import datetime, date, timedelta
+import time
+import socket
+import pandas_datareader as pdr
+from yahooquery import Ticker
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -26,9 +30,31 @@ logger = logging.getLogger(__name__)
 dotenv.load_dotenv()
 alpaca_api_key_id = os.getenv('ALPACA_LIVE_KEY_ID')
 alpaca_api_secret_key = os.getenv('ALPACA_LIVE_SECRET')
+fmp_api_key = os.getenv('FMP_NEWS_API_KEY')
 
 if not alpaca_api_key_id or not alpaca_api_secret_key:
     logger.warning("Alpaca API keys not found in environment variables. News data fetching will not work.")
+
+# Add a function to check internet connectivity
+def check_internet_connection(host="8.8.8.8", port=53, timeout=3):
+    """
+    Check if there is an internet connection by trying to connect to Google's DNS.
+
+    Args:
+        host: The host to connect to (default is Google's DNS)
+        port: The port to connect to (default is 53, DNS port)
+        timeout: Connection timeout in seconds
+
+    Returns:
+        True if connection successful, False otherwise
+    """
+    try:
+        socket.setdefaulttimeout(timeout)
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
+        return True
+    except socket.error as ex:
+        logger.error(f"Internet connection check failed: {ex}")
+        return False
 
 @st.cache_resource
 def load_data(stockSymbol: str, start_date: Union[str, date], end_date: Union[str, date]) -> Tuple[pd.DataFrame, Optional[MinMaxScaler]]:
@@ -43,71 +69,131 @@ def load_data(stockSymbol: str, start_date: Union[str, date], end_date: Union[st
     Returns:
         A tuple containing the stock data DataFrame and the close price scaler
     """
-    # Ensure end_date is not in the future
+    # Check internet connection first
+    if not check_internet_connection():
+        st.error("No internet connection detected. Please check your network and try again.")
+        return pd.DataFrame(), None
+
+    # Ensure dates are properly formatted and validated
     today = datetime.now().date()
+
+    # Convert string dates to date objects if needed
+    if isinstance(start_date, str):
+        try:
+            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+        except ValueError:
+            logger.error(f"Invalid start date format: {start_date}. Using 1 year ago.")
+            start_date_obj = today - timedelta(days=365)
+    else:
+        start_date_obj = start_date
+
     if isinstance(end_date, str):
-        end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
-        if end_date_obj > today:
-            end_date = today.strftime('%Y-%m-%d')
-    elif isinstance(end_date, date) and end_date > today:
-        end_date = today
+        try:
+            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+        except ValueError:
+            logger.error(f"Invalid end date format: {end_date}. Using today.")
+            end_date_obj = today
+    else:
+        end_date_obj = end_date
+
+    # Ensure end_date is not in the future
+    if end_date_obj > today:
+        logger.warning(f"End date {end_date_obj} is in the future. Using today's date instead.")
+        end_date_obj = today
+        end_date = today.strftime('%Y-%m-%d')
+
+    # Ensure start_date is not in the future and not after end_date
+    if start_date_obj > today:
+        logger.warning(f"Start date {start_date_obj} is in the future. Using 1 year before today instead.")
+        start_date_obj = today - timedelta(days=365)
+        start_date = start_date_obj.strftime('%Y-%m-%d')
+
+    if start_date_obj > end_date_obj:
+        logger.warning(f"Start date {start_date_obj} is after end date {end_date_obj}. Swapping dates.")
+        start_date_obj, end_date_obj = end_date_obj, start_date_obj
+        start_date = start_date_obj.strftime('%Y-%m-%d')
+        end_date = end_date_obj.strftime('%Y-%m-%d')
 
     logger.info(f"Loading data for {stockSymbol} from {start_date} to {end_date}")
 
-    try:
-        # Try to download with progress=False to avoid potential issues
-        stock_data = yf.download(stockSymbol, start=start_date, end=end_date, progress=False)
+    # Normalize stock symbol - remove any trailing whitespace or special characters
+    stockSymbol = stockSymbol.strip().upper()
 
-        if stock_data.empty:
-            # Try with a shorter date range as a fallback
-            fallback_start = datetime.now().date() - timedelta(days=365)
-            logger.warning(f"No data found for {stockSymbol} from {start_date} to {end_date}. Trying with shorter range: {fallback_start} to {today}")
-            st.warning(f"No data found for {stockSymbol} from {start_date} to {end_date}. Trying with shorter range: {fallback_start} to {today}")
+    # Set up retries
+    max_retries = 3
+    retry_delay = 2  # seconds
 
-            stock_data = yf.download(stockSymbol, start=fallback_start, end=today, progress=False)
+    # Try different methods to fetch data
+    methods = [
+        # Method 1: Financial Modeling Prep API (most reliable)
+        lambda: fetch_from_fmp(stockSymbol, start_date, end_date),
 
-            if stock_data.empty:
-                st.error(f"No data found for symbol {stockSymbol}. Please check the symbol and try again.")
-                return pd.DataFrame(), None
+        # Method 2: Use yf.download with default parameters
+        lambda: yf.download(stockSymbol, start=start_date, end=end_date, progress=False),
 
-        # Normalize Close prices
-        close_scaler = MinMaxScaler(feature_range=(0, 1))
-        stock_data['Normalized_Close'] = close_scaler.fit_transform(stock_data['Close'].values.reshape(-1, 1))
+        # Method 3: Use yf.Ticker.history
+        lambda: yf.Ticker(stockSymbol).history(start=start_date, end=end_date),
 
-        # Normalize Volume if available
-        if 'Volume' in stock_data.columns:
-            volume_scaler = MinMaxScaler(feature_range=(0, 1))
-            stock_data['Normalized_Volume'] = volume_scaler.fit_transform(stock_data['Volume'].values.reshape(-1, 1))
+        # Method 4: Use yf.download with different parameters
+        lambda: yf.download(stockSymbol, start=start_date, end=end_date, progress=False, threads=False),
 
-        logger.info(f"Successfully loaded data: {len(stock_data)} rows")
-        return stock_data, close_scaler
+        # Method 5: Try with a shorter date range
+        lambda: yf.download(stockSymbol, start=(datetime.now().date() - timedelta(days=365)).strftime('%Y-%m-%d'), end=today.strftime('%Y-%m-%d'), progress=False),
 
-    except Exception as e:
-        st.error(f"Error loading data for {stockSymbol}: {str(e)}")
-        logger.error(f"Error loading data: {str(e)}", exc_info=True)
+        # Method 6: Try pandas-datareader
+        lambda: fetch_from_pandas_datareader(stockSymbol, start_date, end_date),
 
-        # Try with a different API method as a last resort
-        try:
-            logger.info(f"Attempting to fetch {stockSymbol} data using Ticker object")
-            ticker = yf.Ticker(stockSymbol)
-            stock_data = ticker.history(start=start_date, end=end_date)
+        # Method 7: Try yahooquery
+        lambda: fetch_from_yahooquery(stockSymbol, start_date, end_date)
+    ]
 
-            if not stock_data.empty:
-                # Normalize Close prices
-                close_scaler = MinMaxScaler(feature_range=(0, 1))
-                stock_data['Normalized_Close'] = close_scaler.fit_transform(stock_data['Close'].values.reshape(-1, 1))
+    for method_idx, method in enumerate(methods):
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Trying method {method_idx+1}, attempt {attempt+1} for {stockSymbol}")
+                stock_data = method()
 
-                # Normalize Volume if available
-                if 'Volume' in stock_data.columns:
-                    volume_scaler = MinMaxScaler(feature_range=(0, 1))
-                    stock_data['Normalized_Volume'] = volume_scaler.fit_transform(stock_data['Volume'].values.reshape(-1, 1))
+                if stock_data is None or stock_data.empty:
+                    logger.warning(f"Method {method_idx+1}, attempt {attempt+1} returned empty data for {stockSymbol}")
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                        continue
+                else:
+                    # Check if we have enough data points
+                    if len(stock_data) < 5:  # Arbitrary threshold, adjust as needed
+                        logger.warning(f"Method {method_idx+1} returned only {len(stock_data)} data points for {stockSymbol}, which may not be enough")
+                        if attempt < max_retries - 1:
+                            logger.warning(f"Retrying in {retry_delay} seconds...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2
+                            continue
 
-                logger.info(f"Successfully loaded data using Ticker object: {len(stock_data)} rows")
-                return stock_data, close_scaler
-        except Exception as ticker_error:
-            logger.error(f"Error using Ticker object: {str(ticker_error)}", exc_info=True)
+                    # Data successfully loaded, process it
+                    # Normalize Close prices
+                    close_scaler = MinMaxScaler(feature_range=(0, 1))
+                    stock_data['Normalized_Close'] = close_scaler.fit_transform(stock_data['Close'].values.reshape(-1, 1))
 
-        return pd.DataFrame(), None
+                    # Normalize Volume if available
+                    if 'Volume' in stock_data.columns:
+                        volume_scaler = MinMaxScaler(feature_range=(0, 1))
+                        stock_data['Normalized_Volume'] = volume_scaler.fit_transform(stock_data['Volume'].values.reshape(-1, 1))
+
+                    logger.info(f"Successfully loaded data using method {method_idx+1}: {len(stock_data)} rows")
+                    return stock_data, close_scaler
+
+            except Exception as e:
+                logger.error(f"Error in method {method_idx+1}, attempt {attempt+1} for {stockSymbol}: {str(e)}")
+
+                if attempt < max_retries - 1:
+                    logger.warning(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+
+    # If we've reached here, all methods and retries have failed
+    logger.error(f"Failed to fetch data for {stockSymbol} after trying all methods")
+    return pd.DataFrame(), None
 
 def preprocess_data(
     stock_data: pd.DataFrame,
@@ -373,3 +459,172 @@ def denormalize(data: np.ndarray, mean: float, std: float) -> np.ndarray:
         Denormalized data
     """
     return data * std + mean
+
+# Add fetch_stock_data function for compatibility with live_trading.py
+def fetch_stock_data(stockSymbol: str, start_date: Union[str, date], end_date: Union[str, date]) -> pd.DataFrame:
+    """
+    Fetch stock data for live trading. This is a wrapper around load_data for compatibility.
+
+    Args:
+        stockSymbol: The ticker symbol for the stock
+        start_date: The start date for the data range
+        end_date: The end date for the data range
+
+    Returns:
+        DataFrame containing stock data
+    """
+    try:
+        logger.info(f"Fetching stock data for {stockSymbol} from {start_date} to {end_date}")
+        stock_data, _ = load_data(stockSymbol, start_date, end_date)
+
+        if stock_data.empty:
+            logger.error(f"Failed to fetch data for {stockSymbol}. Please check the symbol and date range.")
+            return pd.DataFrame()
+
+        logger.info(f"Successfully fetched {len(stock_data)} rows of data for {stockSymbol}")
+        return stock_data
+    except Exception as e:
+        logger.error(f"Error fetching stock data for {stockSymbol}: {str(e)}")
+        return pd.DataFrame()
+
+# Add functions to fetch data from additional sources
+def fetch_from_pandas_datareader(symbol: str, start_date: Union[str, date], end_date: Union[str, date]) -> pd.DataFrame:
+    """
+    Fetch stock data using pandas-datareader as another fallback option.
+
+    Args:
+        symbol: The ticker symbol for the stock
+        start_date: The start date for the data range
+        end_date: The end date for the data range
+
+    Returns:
+        DataFrame containing stock data
+    """
+    try:
+        logger.info(f"Fetching data from pandas-datareader for {symbol}")
+        df = pdr.data.get_data_yahoo(symbol, start=start_date, end=end_date)
+
+        if df.empty:
+            logger.warning(f"No data found in pandas-datareader for {symbol}")
+
+        return df
+
+    except Exception as e:
+        logger.error(f"Error fetching data from pandas-datareader: {str(e)}")
+        return pd.DataFrame()
+
+def fetch_from_yahooquery(symbol: str, start_date: Union[str, date], end_date: Union[str, date]) -> pd.DataFrame:
+    """
+    Fetch stock data using yahooquery as another fallback option.
+
+    Args:
+        symbol: The ticker symbol for the stock
+        start_date: The start date for the data range
+        end_date: The end date for the data range
+
+    Returns:
+        DataFrame containing stock data
+    """
+    try:
+        # Convert dates to string format if they're date objects
+        if isinstance(start_date, date):
+            start_date = start_date.strftime('%Y-%m-%d')
+        if isinstance(end_date, date):
+            end_date = end_date.strftime('%Y-%m-%d')
+
+        logger.info(f"Fetching data from yahooquery for {symbol}")
+        ticker = Ticker(symbol)
+        df = ticker.history(start=start_date, end=end_date)
+
+        # If df is multi-index with symbol as first level, get just the data for our symbol
+        if isinstance(df.index, pd.MultiIndex):
+            if symbol in df.index.get_level_values(0):
+                df = df.loc[symbol]
+            else:
+                logger.warning(f"Symbol {symbol} not found in yahooquery results")
+                return pd.DataFrame()
+
+        if df.empty:
+            logger.warning(f"No data found in yahooquery for {symbol}")
+
+        return df
+
+    except Exception as e:
+        logger.error(f"Error fetching data from yahooquery: {str(e)}")
+        return pd.DataFrame()
+
+def fetch_from_fmp(symbol: str, start_date: Union[str, date], end_date: Union[str, date]) -> pd.DataFrame:
+    """
+    Fetch stock data from Financial Modeling Prep API.
+
+    Args:
+        symbol: The ticker symbol for the stock
+        start_date: The start date for the data range
+        end_date: The end date for the data range
+
+    Returns:
+        DataFrame containing stock data
+    """
+    if not fmp_api_key:
+        logger.warning("FMP API key not found in environment variables")
+        return pd.DataFrame()
+
+    try:
+        # Convert dates to string format if they're date objects
+        if isinstance(start_date, date):
+            start_date = start_date.strftime('%Y-%m-%d')
+        if isinstance(end_date, date):
+            end_date = end_date.strftime('%Y-%m-%d')
+
+        # Fetch historical daily data
+        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?from={start_date}&to={end_date}&apikey={fmp_api_key}"
+        logger.info(f"Fetching data from Financial Modeling Prep for {symbol}")
+
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+
+        if "Error Message" in data:
+            logger.error(f"FMP API error: {data['Error Message']}")
+            return pd.DataFrame()
+
+        if "historical" not in data:
+            logger.error(f"Unexpected FMP API response format: {data.keys()}")
+            return pd.DataFrame()
+
+        # Convert to DataFrame
+        historical_data = data["historical"]
+        df = pd.DataFrame(historical_data)
+
+        # Rename columns to match Yahoo Finance format
+        df = df.rename(columns={
+            'date': 'Date',
+            'open': 'Open',
+            'high': 'High',
+            'low': 'Low',
+            'close': 'Close',
+            'adjClose': 'Adj Close',
+            'volume': 'Volume'
+        })
+
+        # Convert date to datetime and set as index
+        df['Date'] = pd.to_datetime(df['Date'])
+        df = df.set_index('Date')
+
+        # Sort by date (oldest to newest)
+        df = df.sort_index()
+
+        if df.empty:
+            logger.warning(f"No data found in FMP for {symbol} between {start_date} and {end_date}")
+
+        return df
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching data from FMP: {str(e)}")
+        return pd.DataFrame()
+    except ValueError as e:
+        logger.error(f"Error parsing FMP data: {str(e)}")
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Unexpected error with FMP: {str(e)}")
+        return pd.DataFrame()
