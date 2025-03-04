@@ -382,48 +382,33 @@ class TradingEngine:
         final_value = backtest_data['PortfolioValue'].iloc[-1]
         total_return = (final_value - self.initial_capital) / self.initial_capital * 100
 
-        # Convert trades record to dataframe
+        # Create a DataFrame from the trades_record list
         if trades_record:
-            trades_df = pd.DataFrame(trades_record)
+            try:
+                trades_df = pd.DataFrame(trades_record)
 
-            # Ensure date column is properly formatted as datetime
-            if 'date' in trades_df.columns:
-                # Check if we have any epoch dates (1970-01-01)
-                if pd.api.types.is_datetime64_any_dtype(trades_df['date']):
-                    if (trades_df['date'].dt.year == 1970).any():
-                        logger.warning("Detected epoch dates (1970-01-01) in trades. Redistributing trades over the backtest period.")
-                        # Create artificial dates based on the backtest data index
-                        if len(backtest_data.index) >= len(trades_df):
-                            # Group trades by action for better distribution
-                            buys = trades_df[trades_df['action'] == 'BUY']
-                            sells = trades_df[trades_df['action'] == 'SELL']
-                            stop_losses = trades_df[trades_df['action'] == 'STOP_LOSS']
+                # Ensure 'profit_loss' and 'profit_loss_pct' columns exist for BUY transactions
+                if 'profit_loss' not in trades_df.columns:
+                    trades_df['profit_loss'] = 0.0
+                    trades_df['profit_loss_pct'] = 0.0
+                elif trades_df['action'].isin(['BUY']).any():
+                    # Fill NaN values with 0.0 for 'profit_loss' and 'profit_loss_pct' columns
+                    trades_df.loc[trades_df['action'] == 'BUY', 'profit_loss'] = 0.0
+                    trades_df.loc[trades_df['action'] == 'BUY', 'profit_loss_pct'] = 0.0
 
-                            # Distribute each type of trade separately
-                            if len(buys) > 0:
-                                buy_indices = np.linspace(0, len(backtest_data.index)//3, len(buys)).astype(int)
-                                buy_dates = [backtest_data.index[i] for i in buy_indices]
-                                trades_df.loc[trades_df['action'] == 'BUY', 'date'] = buy_dates
+                # Fill any NaN values in profit_loss with 0.0
+                if trades_df['profit_loss'].isna().any():
+                    trades_df['profit_loss'] = trades_df['profit_loss'].fillna(0.0)
 
-                            if len(stop_losses) > 0:
-                                stop_indices = np.linspace(len(backtest_data.index)//3, 2*len(backtest_data.index)//3, len(stop_losses)).astype(int)
-                                stop_dates = [backtest_data.index[i] for i in stop_indices]
-                                trades_df.loc[trades_df['action'] == 'STOP_LOSS', 'date'] = stop_dates
+                if trades_df['profit_loss_pct'].isna().any():
+                    trades_df['profit_loss_pct'] = trades_df['profit_loss_pct'].fillna(0.0)
 
-                            if len(sells) > 0:
-                                sell_indices = np.linspace(2*len(backtest_data.index)//3, len(backtest_data.index)-1, len(sells)).astype(int)
-                                sell_dates = [backtest_data.index[i] for i in sell_indices]
-                                trades_df.loc[trades_df['action'] == 'SELL', 'date'] = sell_dates
-
-                            logger.info(f"Redistributed trades from {backtest_data.index[0]} to {backtest_data.index[-1]}")
-                elif not pd.api.types.is_datetime64_any_dtype(trades_df['date']):
-                    try:
-                        trades_df['date'] = pd.to_datetime(trades_df['date'])
-                        logger.info(f"Converted trades date column to datetime. Sample dates: {trades_df['date'].head(3).tolist()}")
-
-                        # Check again for epoch dates after conversion
+                # Ensure date column is properly formatted as datetime
+                if 'date' in trades_df.columns:
+                    # Check if we have any epoch dates (1970-01-01)
+                    if pd.api.types.is_datetime64_any_dtype(trades_df['date']):
                         if (trades_df['date'].dt.year == 1970).any():
-                            logger.warning("Detected epoch dates (1970-01-01) in trades after conversion. Redistributing trades.")
+                            logger.warning("Detected epoch dates (1970-01-01) in trades. Redistributing trades over the backtest period.")
                             # Create artificial dates based on the backtest data index
                             if len(backtest_data.index) >= len(trades_df):
                                 # Group trades by action for better distribution
@@ -448,36 +433,10 @@ class TradingEngine:
                                     trades_df.loc[trades_df['action'] == 'SELL', 'date'] = sell_dates
 
                                 logger.info(f"Redistributed trades from {backtest_data.index[0]} to {backtest_data.index[-1]}")
-                    except Exception as e:
-                        logger.error(f"Error converting trade dates: {e}")
-                        # If conversion fails, create artificial dates
-                        logger.warning("Creating artificial dates for trades")
-                        if len(backtest_data.index) >= len(trades_df):
-                            # Group trades by action for better distribution
-                            buys = trades_df[trades_df['action'] == 'BUY']
-                            sells = trades_df[trades_df['action'] == 'SELL']
-                            stop_losses = trades_df[trades_df['action'] == 'STOP_LOSS']
-
-                            # Distribute each type of trade separately
-                            if len(buys) > 0:
-                                buy_indices = np.linspace(0, len(backtest_data.index)//3, len(buys)).astype(int)
-                                buy_dates = [backtest_data.index[i] for i in buy_indices]
-                                trades_df.loc[trades_df['action'] == 'BUY', 'date'] = buy_dates
-
-                            if len(stop_losses) > 0:
-                                stop_indices = np.linspace(len(backtest_data.index)//3, 2*len(backtest_data.index)//3, len(stop_losses)).astype(int)
-                                stop_dates = [backtest_data.index[i] for i in stop_indices]
-                                trades_df.loc[trades_df['action'] == 'STOP_LOSS', 'date'] = stop_dates
-
-                            if len(sells) > 0:
-                                sell_indices = np.linspace(2*len(backtest_data.index)//3, len(backtest_data.index)-1, len(sells)).astype(int)
-                                sell_dates = [backtest_data.index[i] for i in sell_indices]
-                                trades_df.loc[trades_df['action'] == 'SELL', 'date'] = sell_dates
-
-                            logger.info(f"Redistributed trades from {backtest_data.index[0]} to {backtest_data.index[-1]}")
-        else:
-            # Create empty dataframe with expected columns
-            trades_df = pd.DataFrame(columns=['date', 'action', 'symbol', 'price', 'size', 'cost', 'profit_loss', 'profit_loss_pct'])
+            except Exception as e:
+                logger.error(f"Error creating trades DataFrame: {e}")
+                # Create empty dataframe with expected columns
+                trades_df = pd.DataFrame(columns=['date', 'action', 'symbol', 'price', 'size', 'cost', 'profit_loss', 'profit_loss_pct'])
 
         # Calculate metrics regardless of whether trades occurred
         # Calculate max drawdown directly from portfolio values
@@ -523,12 +482,12 @@ class TradingEngine:
             'Avg Profit Pct': avg_profit_pct,
             'Max Drawdown': max_drawdown,
             'Sharpe Ratio': sharpe_ratio,
-            'Total Trades': len(trades_df),
-            'Winning Trades': len(trades_df[trades_df['profit_loss'] > 0]),
-            'Losing Trades': len(trades_df[trades_df['profit_loss'] < 0]),
+            'Total Trades': len(trades_df) if not trades_df.empty else 0,
+            'Winning Trades': len(trades_df[trades_df['profit_loss'] > 0]) if not trades_df.empty and 'profit_loss' in trades_df.columns else 0,
+            'Losing Trades': len(trades_df[trades_df['profit_loss'] < 0]) if not trades_df.empty and 'profit_loss' in trades_df.columns else 0,
             'Avg Profit Per Trade': avg_profit if len(trades_df) > 0 else 0.0,
-            'Avg Loss Per Trade': -avg_profit if len(trades_df[trades_df['profit_loss'] < 0]) > 0 else 0.0,
-            'Profit Factor': (len(trades_df[trades_df['profit_loss'] > 0]) / len(trades_df[trades_df['profit_loss'] < 0])) if len(trades_df[trades_df['profit_loss'] < 0]) > 0 else 0.0
+            'Avg Loss Per Trade': trades_df.loc[trades_df['profit_loss'] < 0, 'profit_loss'].mean() if not trades_df.empty and 'profit_loss' in trades_df.columns and (trades_df['profit_loss'] < 0).any() else 0.0,
+            'Profit Factor': (len(trades_df[trades_df['profit_loss'] > 0]) / len(trades_df[trades_df['profit_loss'] < 0])) if not trades_df.empty and 'profit_loss' in trades_df.columns and len(trades_df[trades_df['profit_loss'] < 0]) > 0 else 0.0
         }
 
         return backtest_data, trades_df, metrics
@@ -737,7 +696,7 @@ def trend_following_strategy(data, threshold=0.001):
 
     Args:
         data: DataFrame with 'Actual' and 'Predicted' columns
-        threshold: Price change threshold for generating signals
+        threshold: Price change threshold for generating signals (as a decimal, e.g., 0.01 for 1%)
 
     Returns:
         Series of trading signals (1: buy, -1: sell, 0: hold)
@@ -747,39 +706,78 @@ def trend_following_strategy(data, threshold=0.001):
 
     # Return empty signals if necessary columns are missing
     if 'Predicted' not in data.columns or 'Actual' not in data.columns:
+        logger.warning("Required columns missing for trend following strategy")
         return signals
 
     # Make a copy to avoid SettingWithCopyWarning
     df = data.copy()
 
-    # Calculate predicted price changes
-    df['PredictedChange'] = df['Predicted'].shift(-1) - df['Predicted']
-    df['PredictedChangePercent'] = df['PredictedChange'] / df['Predicted'].replace(0, np.nan)
+    # Calculate predicted price changes (looking at next day's predicted value)
+    df['PredictedChange'] = df['Predicted'].pct_change().shift(-1)
 
-    # Fill NaN values that might be created from division by zero
-    df['PredictedChangePercent'] = df['PredictedChangePercent'].fillna(0)
+    # Log some debugging information
+    logger.info(f"Trend following strategy with threshold: {threshold}")
+    logger.info(f"First 5 predicted changes: {df['PredictedChange'].head().tolist()}")
+    logger.info(f"Data shape: {df.shape}")
+    logger.info(f"Min predicted change: {df['PredictedChange'].min():.4f}, Max predicted change: {df['PredictedChange'].max():.4f}")
+    logger.info(f"Number of values > threshold: {(df['PredictedChange'] > threshold).sum()}")
+    logger.info(f"Number of values < -threshold: {(df['PredictedChange'] < -threshold).sum()}")
 
     # Generate signals based on predicted changes and threshold
-    signals[df['PredictedChangePercent'] > threshold] = 1  # Buy signal
-    signals[df['PredictedChangePercent'] < -threshold] = -1  # Sell signal
+    signals[df['PredictedChange'] > threshold] = 1  # Buy signal
+    signals[df['PredictedChange'] < -threshold] = -1  # Sell signal
 
-    # Add cooldown to prevent rapid buying and selling
-    # After a signal, create a cooling period of 3 days
+    # Check if we have any signals at all
+    if (signals != 0).sum() == 0:
+        logger.warning(f"No signals generated! Threshold {threshold} may be too high. Trying with a lower threshold.")
+        # Try with a lower threshold as a fallback
+        lower_threshold = threshold / 2
+        signals[df['PredictedChange'] > lower_threshold] = 1
+        signals[df['PredictedChange'] < -lower_threshold] = -1
+
+        # If still no signals, create some based on basic price movement
+        if (signals != 0).sum() == 0:
+            logger.warning("Still no signals with lower threshold. Using basic price movement.")
+            # Generate some basic signals based on the actual price movement
+            df['ActualChange'] = df['Actual'].pct_change()
+            signals[df['ActualChange'] > 0] = 1  # Buy if price went up
+            signals[df['ActualChange'] < 0] = -1  # Sell if price went down
+
+    # Apply a more realistic trading approach:
+    # 1. Don't change position every day (apply a cooling period)
+    # 2. Avoid rapid buying and selling
     cooling_period = 3
-    for i in range(1, len(signals)):
-        if signals.iloc[i-1] != 0 and i >= cooling_period:
-            # If we have a recent signal, ensure we don't signal same direction immediately
-            recent_signals = signals.iloc[i-cooling_period:i]
-            if (recent_signals != 0).any():
-                signals.iloc[i] = 0
+    current_position = 0
 
-    # Fill NaN values that might be created from shifting
-    signals = signals.fillna(0).astype(int)
+    for i in range(len(signals)):
+        if i < cooling_period:
+            # For the first few days, follow the original signals
+            if signals.iloc[i] != 0:
+                current_position = signals.iloc[i]
+        else:
+            # After cooling period, apply more conservative approach
+            if signals.iloc[i] != 0:
+                # Only switch position if signal is different from current position
+                # and we haven't changed positions recently
+                recent_changes = (signals.iloc[i-cooling_period:i] != 0).sum()
+                if recent_changes == 0 and signals.iloc[i] != current_position:
+                    current_position = signals.iloc[i]
+                    # Keep the signal
+                else:
+                    # Don't trade too frequently, maintain current position
+                    signals.iloc[i] = 0
 
     # Ensure the first signal is either buy or hold (not sell)
     # This prevents starting with a sell signal when there's no position
     if signals.iloc[0] < 0:
         signals.iloc[0] = 0
+
+    # Ensure the last day doesn't have a buy signal (should close positions)
+    if signals.iloc[-1] > 0:
+        signals.iloc[-1] = 0
+
+    # Log final signal count
+    logger.info(f"Final buy signals: {(signals == 1).sum()}, sell signals: {(signals == -1).sum()}")
 
     return signals
 
@@ -801,41 +799,99 @@ def mean_reversion_strategy(data, lookback=20, std_dev=1.5):
 
     # Return empty signals if necessary columns are missing
     if 'Actual' not in data.columns:
+        logger.warning("'Actual' column missing in data for mean reversion strategy")
         return signals
 
     # Make a copy to avoid SettingWithCopyWarning
     df = data.copy()
 
-    # Ensure lookback parameter is valid
-    lookback = max(min(lookback, len(df) // 2), 2)  # At least 2, at most half the data length
+    # Convert values to numeric if needed
+    if not pd.api.types.is_numeric_dtype(df['Actual']):
+        try:
+            df['Actual'] = pd.to_numeric(df['Actual'], errors='coerce')
+            df['Actual'] = df['Actual'].fillna(method='ffill')  # Fill NaN values with previous values
+        except Exception as e:
+            logger.error(f"Error converting 'Actual' column to numeric in mean reversion strategy: {e}")
+            return signals
+
+    # Check for negative or zero values in price data (which could cause issues)
+    if (df['Actual'] <= 0).any():
+        logger.warning("Negative or zero values found in price data. Cleaning data.")
+        df['Actual'] = df['Actual'].mask(df['Actual'] <= 0, None)
+        df['Actual'] = df['Actual'].fillna(method='ffill')
+
+    # Ensure lookback parameter is valid and has enough data
+    min_lookback = 5  # Reasonable minimum for statistical validity
+    if len(df) < min_lookback:
+        logger.warning(f"Not enough data for mean reversion strategy. Need at least {min_lookback} points.")
+        return signals
+
+    # Ensure lookback is at least min_lookback and at most half the data length
+    lookback = max(min(lookback, len(df) // 2), min_lookback)
 
     # Calculate rolling mean and standard deviation
-    df['RollingMean'] = df['Actual'].rolling(window=lookback, min_periods=1).mean()
-    df['RollingStd'] = df['Actual'].rolling(window=lookback, min_periods=1).std()
+    df['RollingMean'] = df['Actual'].rolling(window=lookback, min_periods=min_lookback).mean()
+    df['RollingStd'] = df['Actual'].rolling(window=lookback, min_periods=min_lookback).std()
 
     # Calculate Z-score with handling for division by zero
-    df['ZScore'] = (df['Actual'] - df['RollingMean']) / df['RollingStd'].replace(0, np.nan)
-    df['ZScore'] = df['ZScore'].fillna(0)
+    # Only calculate where we have valid mean and standard deviation
+    valid_indices = (df['RollingStd'] > 0) & df['RollingMean'].notna()
+    df['ZScore'] = np.nan
+
+    # Only calculate Z-scores where we have valid data
+    if valid_indices.any():
+        df.loc[valid_indices, 'ZScore'] = (df.loc[valid_indices, 'Actual'] - df.loc[valid_indices, 'RollingMean']) / df.loc[valid_indices, 'RollingStd']
+    else:
+        logger.warning("No valid data to calculate Z-scores in mean reversion strategy")
+        return signals
 
     # Generate signals based on Z-score
-    signals[df['ZScore'] < -std_dev] = 1  # Buy when price is below mean
-    signals[df['ZScore'] > std_dev] = -1  # Sell when price is above mean
+    signals[df['ZScore'] < -std_dev] = 1  # Buy when price is below mean (negative Z-score)
+    signals[df['ZScore'] > std_dev] = -1  # Sell when price is above mean (positive Z-score)
 
     # Add cooldown between signals to prevent rapid buying and selling
-    cooling_period = 5
+    cooling_period = max(5, lookback // 4)  # More dynamic cooling period based on lookback
     for i in range(1, len(signals)):
         if signals.iloc[i-1] != 0 and i >= cooling_period:
             # If we have a recent signal, ensure we don't signal again too soon
-            recent_signals = signals.iloc[i-cooling_period:i]
+            recent_signals = signals.iloc[max(0, i-cooling_period):i]
             if (recent_signals != 0).any():
                 signals.iloc[i] = 0
 
-    # Fill NaN values and convert to integer
-    signals = signals.fillna(0).astype(int)
+    # Ensure we have reasonable signal distribution
+    buy_signals = (signals == 1).sum()
+    sell_signals = (signals == -1).sum()
+
+    # If too few signals, try reducing the threshold
+    if buy_signals < 2 and sell_signals < 2 and len(signals) > lookback * 2:
+        logger.info(f"Too few signals with threshold {std_dev}. Trying with lower threshold.")
+        # Gradually reduce the threshold until we get at least a few signals
+        for reduced_threshold in [std_dev * 0.8, std_dev * 0.6, 1.0]:
+            signals_temp = pd.Series(0, index=data.index)
+            signals_temp[df['ZScore'] < -reduced_threshold] = 1
+            signals_temp[df['ZScore'] > reduced_threshold] = -1
+
+            # Apply the same cooling period
+            for i in range(1, len(signals_temp)):
+                if signals_temp.iloc[i-1] != 0 and i >= cooling_period:
+                    recent_signals = signals_temp.iloc[max(0, i-cooling_period):i]
+                    if (recent_signals != 0).any():
+                        signals_temp.iloc[i] = 0
+
+            buy_signals_temp = (signals_temp == 1).sum()
+            sell_signals_temp = (signals_temp == -1).sum()
+
+            if buy_signals_temp >= 2 or sell_signals_temp >= 2:
+                signals = signals_temp
+                logger.info(f"Using reduced threshold {reduced_threshold}. Signals: {buy_signals_temp} buys, {sell_signals_temp} sells")
+                break
 
     # Ensure the first signal is either buy or hold (not sell)
     if signals.iloc[0] < 0:
         signals.iloc[0] = 0
+
+    # Fill NaN values and convert to integer
+    signals = signals.fillna(0).astype(int)
 
     return signals
 

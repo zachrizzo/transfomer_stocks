@@ -680,10 +680,15 @@ def backtest_strategy(stock_data, test_chart_data, backtest_start_date, backtest
 
         if strategy_type == "Trend Following":
             # Get stored value if exists, otherwise use default
-            default_threshold = st.session_state['backtest_params'].get('threshold', 0.1) * 100
+            default_threshold = st.session_state['backtest_params'].get('threshold', 0.5) * 100  # Default 0.5% instead of 0.1%
             threshold = st.slider("Price Change Threshold (%)", min_value=0.0, max_value=5.0, value=default_threshold, step=0.1) / 100
             strategy_params = {'threshold': threshold}
             strategy_func = trend_following_strategy
+
+            # Add explanation about threshold
+            st.info(f"The trend following strategy generates buy signals when the predicted price change exceeds {threshold*100:.1f}% and "
+                    f"sell signals when it falls below -{threshold*100:.1f}%. "
+                    f"A higher threshold means fewer trades but potentially higher confidence.")
 
         elif strategy_type == "Mean Reversion":
             col1, col2 = st.columns(2)
@@ -730,6 +735,10 @@ def backtest_strategy(stock_data, test_chart_data, backtest_start_date, backtest
         # Store the strategy parameters in session state
         st.session_state['backtest_params'] = strategy_params
 
+    # Additional backtesting options
+    debug_mode = st.checkbox("Debug Mode", value=False,
+                            help="Show additional debugging information for the backtesting process")
+
     # Initialize trading engine with settings
     trading_engine = TradingEngine(
         mode='backtest',
@@ -742,297 +751,418 @@ def backtest_strategy(stock_data, test_chart_data, backtest_start_date, backtest
     # Run backtesting with progress indicator
     with st.spinner("Running backtesting simulation..."):
         try:
+            # Generate signals first to check if they're being created properly
+            if debug_mode:
+                st.subheader("Debug: Signal Generation")
+                # Make a copy of the data for debugging
+                debug_data = test_chart_data.copy()
+                # Generate signals directly
+                signals = strategy_func(debug_data, **strategy_params)
+
+                # Display signal statistics
+                buy_signals = (signals == 1).sum()
+                sell_signals = (signals == -1).sum()
+                hold_signals = (signals == 0).sum()
+
+                st.write(f"Total data points: {len(signals)}")
+                st.write(f"Buy signals: {buy_signals} ({buy_signals/len(signals)*100:.1f}%)")
+                st.write(f"Sell signals: {sell_signals} ({sell_signals/len(signals)*100:.1f}%)")
+                st.write(f"Hold signals: {hold_signals} ({hold_signals/len(signals)*100:.1f}%)")
+
+                # Show first few signals
+                debug_data['Signal'] = signals
+                st.write("Sample of signals (first 10 days):")
+                st.dataframe(debug_data[['Actual', 'Predicted', 'Signal']].head(10))
+
+                # Show periods with active trading
+                if buy_signals > 0 or sell_signals > 0:
+                    active_periods = debug_data[debug_data['Signal'] != 0]
+                    st.write(f"Sample of active trading periods ({len(active_periods)} days with signals):")
+                    st.dataframe(active_periods[['Actual', 'Predicted', 'Signal']].head(10))
+                else:
+                    st.error("No buy or sell signals were generated! Check your strategy parameters.")
+
+                # Plot predicted vs actual with signals
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=debug_data.index, y=debug_data['Actual'], mode='lines', name='Actual Price'))
+                fig.add_trace(go.Scatter(x=debug_data.index, y=debug_data['Predicted'], mode='lines', name='Predicted Price'))
+
+                # Add buy/sell markers
+                buy_points = debug_data[debug_data['Signal'] == 1]
+                sell_points = debug_data[debug_data['Signal'] == -1]
+
+                if not buy_points.empty:
+                    fig.add_trace(go.Scatter(
+                        x=buy_points.index,
+                        y=buy_points['Actual'],
+                        mode='markers',
+                        marker=dict(color='green', size=10, symbol='triangle-up'),
+                        name='Buy Signal'
+                    ))
+
+                if not sell_points.empty:
+                    fig.add_trace(go.Scatter(
+                        x=sell_points.index,
+                        y=sell_points['Actual'],
+                        mode='markers',
+                        marker=dict(color='red', size=10, symbol='triangle-down'),
+                        name='Sell Signal'
+                    ))
+
+                fig.update_layout(title='Price with Trading Signals')
+                st.plotly_chart(fig)
+
+            # Run the actual backtest
             backtest_results, trades, metrics = trading_engine.backtest(
                 strategy=strategy_func,
                 data=test_chart_data,
                 strategy_params=strategy_params
             )
-        except Exception as e:
-            st.error(f"Backtesting failed with error: {str(e)}")
-            return None
 
-    if backtest_results is None or backtest_results.empty:
-        st.warning("Backtesting failed. Please check your data and parameters.")
-        return None
+            if backtest_results is None or backtest_results.empty:
+                st.warning("Backtesting failed. Please check your data and parameters.")
+                return None
 
-    # Display performance metrics
-    st.subheader("Performance Metrics")
+            # Display performance metrics
+            st.subheader("Performance Metrics")
 
-    # First row of metrics
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Return", f"{metrics['Total Return']:.2f}%")
-    col2.metric("Initial Capital", f"${metrics['Initial Capital']:.2f}", f"${metrics['Final Value'] - metrics['Initial Capital']:.2f}")
-    col3.metric("Final Value", f"${metrics['Final Value']:.2f}")
-    col4.metric("Sharpe Ratio", f"{metrics['Sharpe Ratio']:.4f}")
+            # First row of metrics
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total Return", f"{metrics['Total Return']:.2f}%")
+            col2.metric("Initial Capital", f"${metrics['Initial Capital']:.2f}", f"${metrics['Final Value'] - metrics['Initial Capital']:.2f}")
+            col3.metric("Final Value", f"${metrics['Final Value']:.2f}")
+            col4.metric("Sharpe Ratio", f"{metrics['Sharpe Ratio']:.4f}")
 
-    # Second row of metrics
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Trades", f"{metrics['Total Trades']}")
-    col2.metric("Win Rate", f"{metrics['Win Rate']:.2f}%")
-    col3.metric("Avg Profit/Loss", f"${metrics['Avg Profit']:.2f}")
-    col4.metric("Max Drawdown", f"{metrics['Max Drawdown']:.2f}%")
+            # Second row of metrics
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total Trades", f"{metrics['Total Trades']}")
+            col2.metric("Win Rate", f"{metrics['Win Rate']:.2f}%")
+            col3.metric("Avg Profit/Loss", f"${metrics['Avg Profit']:.2f}")
+            col4.metric("Max Drawdown", f"{metrics['Max Drawdown']:.2f}%")
 
-    # Compare with benchmark (buy and hold from day 1)
-    if strategy_type != "Buy and Hold":
-        try:
-            first_price = backtest_results['Actual'].iloc[0]
-            last_price = backtest_results['Actual'].iloc[-1]
-            buy_hold_return = (last_price - first_price) / first_price * 100
-
-            st.metric(
-                "Strategy vs Buy & Hold",
-                f"{metrics['Total Return']:.2f}% vs {buy_hold_return:.2f}%",
-                f"{metrics['Total Return'] - buy_hold_return:.2f}%"
-            )
-        except Exception as e:
-            st.warning(f"Could not calculate buy & hold comparison: {str(e)}")
-
-    # Visualize portfolio value over time
-    st.subheader("Portfolio Value Over Time")
-
-    # Create more advanced chart with Plotly
-    if not backtest_results.empty and 'PortfolioValue' in backtest_results.columns:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=backtest_results.index,
-            y=backtest_results['PortfolioValue'],
-            mode='lines',
-            name='Portfolio Value',
-            line=dict(color='blue', width=2)
-        ))
-
-        # Add annotations for Buy/Sell signals if we have trade data
-        if trades is not None and not trades.empty:
-            # Debug information
-            st.write(f"Trade dates range: {trades['date'].min()} to {trades['date'].max()}")
-            st.write(f"Number of unique trade dates: {trades['date'].nunique()} out of {len(trades)} trades")
-
-            # Ensure date column is in datetime format
-            if not pd.api.types.is_datetime64_any_dtype(trades['date']):
+            # Compare with benchmark (buy and hold from day 1)
+            if strategy_type != "Buy and Hold":
                 try:
-                    trades['date'] = pd.to_datetime(trades['date'])
+                    first_price = backtest_results['Actual'].iloc[0]
+                    last_price = backtest_results['Actual'].iloc[-1]
+                    buy_hold_return = (last_price - first_price) / first_price * 100
+
+                    st.metric(
+                        "Strategy vs Buy & Hold",
+                        f"{metrics['Total Return']:.2f}% vs {buy_hold_return:.2f}%",
+                        f"{metrics['Total Return'] - buy_hold_return:.2f}%"
+                    )
                 except Exception as e:
-                    st.error(f"Error converting dates: {str(e)}")
+                    st.warning(f"Could not calculate buy & hold comparison: {str(e)}")
 
-            # Check if we still have epoch dates (1970-01-01)
-            if (trades['date'].dt.year == 1970).mean() > 0.5:  # If more than 50% of dates are in 1970
-                st.warning("Detected epoch dates (1970-01-01). Redistributing trades over the backtest period.")
+            # Visualize portfolio value over time
+            st.subheader("Portfolio Value Over Time")
 
-                # Create an artificial distribution of trades across the backtest period
-                date_range = backtest_results.index
+            # Create more advanced chart with Plotly
+            if not backtest_results.empty and 'PortfolioValue' in backtest_results.columns:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=backtest_results.index,
+                    y=backtest_results['PortfolioValue'],
+                    mode='lines',
+                    name='Portfolio Value',
+                    line=dict(color='blue', width=2)
+                ))
 
-                if len(date_range) >= len(trades):
-                    # Group trades by action
-                    buys = trades[trades['action'] == 'BUY']
-                    sells = trades[trades['action'] == 'SELL']
-                    stop_losses = trades[trades['action'] == 'STOP_LOSS']
+                # Add annotations for Buy/Sell signals if we have trade data
+                if trades is not None and not trades.empty:
+                    # Only show debug information in debug mode
+                    if debug_mode:
+                        st.write(f"Trade dates range: {trades['date'].min()} to {trades['date'].max()}")
+                        st.write(f"Number of unique trade dates: {trades['date'].nunique()} out of {len(trades)} trades")
 
-                    # Distribute each type of trade separately to maintain the logical sequence
-                    # (buys should generally come before sells)
+                    # Check if we still have epoch dates (1970-01-01) or need to process the trades visualization
+                    if pd.api.types.is_datetime64_any_dtype(trades['date']):
+                        # Process epoch dates
+                        if (trades['date'].dt.year == 1970).mean() > 0.5:  # If more than 50% of dates are in 1970
+                            st.warning("Detected epoch dates (1970-01-01). Redistributing trades over the backtest period.")
 
-                    # First third of the date range for buys
-                    if len(buys) > 0:
-                        buy_indices = np.linspace(0, len(date_range)//3, len(buys)).astype(int)
-                        buy_dates = [date_range[i] for i in buy_indices]
-                        trades.loc[trades['action'] == 'BUY', 'date'] = buy_dates
+                            # Create an artificial distribution of trades across the backtest period
+                            date_range = backtest_results.index
 
-                    # Middle third for stop losses
-                    if len(stop_losses) > 0:
-                        stop_indices = np.linspace(len(date_range)//3, 2*len(date_range)//3, len(stop_losses)).astype(int)
-                        stop_dates = [date_range[i] for i in stop_indices]
-                        trades.loc[trades['action'] == 'STOP_LOSS', 'date'] = stop_dates
+                            if len(date_range) >= len(trades):
+                                # Group trades by action
+                                buys = trades[trades['action'] == 'BUY']
+                                sells = trades[trades['action'] == 'SELL']
+                                stop_losses = trades[trades['action'] == 'STOP_LOSS']
 
-                    # Last third for sells
-                    if len(sells) > 0:
-                        sell_indices = np.linspace(2*len(date_range)//3, len(date_range)-1, len(sells)).astype(int)
-                        sell_dates = [date_range[i] for i in sell_indices]
-                        trades.loc[trades['action'] == 'SELL', 'date'] = sell_dates
+                                # Distribute each type of trade separately to maintain the logical sequence
+                                # (buys should generally come before sells)
 
-                    st.write(f"Redistributed trades from {date_range[0]} to {date_range[-1]}")
-                else:
-                    # If we have more trades than dates, distribute them evenly
-                    trade_indices = np.linspace(0, len(date_range)-1, len(trades)).astype(int)
-                    new_dates = [date_range[i] for i in trade_indices]
-                    trades['date'] = new_dates
-                    st.write(f"Redistributed trades from {new_dates[0]} to {new_dates[-1]}")
+                                # First third of the date range for buys
+                                if len(buys) > 0:
+                                    buy_indices = np.linspace(0, len(date_range)//3, len(buys)).astype(int)
+                                    buy_dates = [date_range[i] for i in buy_indices]
+                                    trades.loc[trades['action'] == 'BUY', 'date'] = buy_dates
 
-            # Ensure trades are sorted by date
-            trades = trades.sort_values('date')
+                                # Middle third for stop losses
+                                if len(stop_losses) > 0:
+                                    stop_indices = np.linspace(len(date_range)//3, 2*len(date_range)//3, len(stop_losses)).astype(int)
+                                    stop_dates = [date_range[i] for i in stop_indices]
+                                    trades.loc[trades['action'] == 'STOP_LOSS', 'date'] = stop_dates
 
-            # Group trades by action
-            buys = trades[trades['action'] == 'BUY']
-            sells = trades[trades['action'] == 'SELL']
-            stop_losses = trades[trades['action'] == 'STOP_LOSS']
+                                # Last third for sells
+                                if len(sells) > 0:
+                                    sell_indices = np.linspace(2*len(date_range)//3, len(date_range)-1, len(sells)).astype(int)
+                                    sell_dates = [date_range[i] for i in sell_indices]
+                                    trades.loc[trades['action'] == 'SELL', 'date'] = sell_dates
 
-            # Create a legend for each action type (only once)
-            buy_added = False
-            sell_added = False
-            stop_loss_added = False
+                                st.write(f"Redistributed trades from {date_range[0]} to {date_range[-1]}")
+                            else:
+                                # If we have more trades than dates, distribute them evenly
+                                trade_indices = np.linspace(0, len(date_range)-1, len(trades)).astype(int)
+                                new_dates = [date_range[i] for i in trade_indices]
+                                trades['date'] = new_dates
+                                st.write(f"Redistributed trades from {new_dates[0]} to {new_dates[-1]}")
 
-            # Add buy markers - make sure to map dates correctly to portfolio values
-            for _, trade in buys.iterrows():
-                date = trade['date']
-                # Find the closest date in backtest_results.index if exact match not found
-                if date not in backtest_results.index:
-                    closest_date = backtest_results.index[backtest_results.index.get_indexer([date], method='nearest')[0]]
-                    date = closest_date
+                    # Always visualize trades regardless of date conversion
+                    # Ensure trades are sorted by date
+                    try:
+                        # If 'date' is not a datetime, try one more time for visualization
+                        if not pd.api.types.is_datetime64_any_dtype(trades['date']):
+                            trades['date'] = pd.to_datetime(trades['date'], errors='coerce')
+                            # For any failed conversions, use evenly spaced dates from the backtest period
+                            if trades['date'].isna().any():
+                                mask = trades['date'].isna()
+                                n_missing = mask.sum()
+                                indices = np.linspace(0, len(backtest_results.index)-1, n_missing+2)[1:-1].astype(int)
+                                replacement_dates = [backtest_results.index[i] for i in indices]
+                                trades.loc[mask, 'date'] = replacement_dates
 
-                if date in backtest_results.index:
-                    fig.add_trace(go.Scatter(
-                        x=[date],
-                        y=[backtest_results.loc[date, 'PortfolioValue']],
-                        mode='markers',
-                        marker=dict(color='green', size=10, symbol='triangle-up'),
-                        name='Buy' if not buy_added else None,
-                        showlegend=not buy_added,
-                        hovertemplate=f"Buy: {date}<br>Price: ${trade['price']:.2f}<br>Size: {trade['size']:.2f}"
-                    ))
-                    buy_added = True
+                        trades = trades.sort_values('date')
 
-            # Add sell markers
-            for _, trade in sells.iterrows():
-                date = trade['date']
-                # Find the closest date in backtest_results.index if exact match not found
-                if date not in backtest_results.index:
-                    closest_date = backtest_results.index[backtest_results.index.get_indexer([date], method='nearest')[0]]
-                    date = closest_date
+                        # Group trades by action
+                        buys = trades[trades['action'] == 'BUY']
+                        sells = trades[trades['action'] == 'SELL']
+                        stop_losses = trades[trades['action'] == 'STOP_LOSS']
 
-                if date in backtest_results.index:
-                    fig.add_trace(go.Scatter(
-                        x=[date],
-                        y=[backtest_results.loc[date, 'PortfolioValue']],
-                        mode='markers',
-                        marker=dict(color='red', size=10, symbol='triangle-down'),
-                        name='Sell' if not sell_added else None,
-                        showlegend=not sell_added,
-                        hovertemplate=f"Sell: {date}<br>Price: ${trade['price']:.2f}<br>Size: {trade['size']:.2f}<br>Profit/Loss: ${trade['profit_loss']:.2f} ({trade['profit_loss_pct']:.2f}%)"
-                    ))
-                    sell_added = True
+                        # Create a legend for each action type (only once)
+                        buy_added = False
+                        sell_added = False
+                        stop_loss_added = False
 
-            # Add stop loss markers
-            for _, trade in stop_losses.iterrows():
-                date = trade['date']
-                # Find the closest date in backtest_results.index if exact match not found
-                if date not in backtest_results.index:
-                    closest_date = backtest_results.index[backtest_results.index.get_indexer([date], method='nearest')[0]]
-                    date = closest_date
+                        # Add buy markers - make sure to map dates correctly to portfolio values
+                        for _, trade in buys.iterrows():
+                            date = trade['date']
+                            # Find the closest date in backtest_results.index if exact match not found
+                            if date not in backtest_results.index:
+                                closest_date = backtest_results.index[backtest_results.index.get_indexer([date], method='nearest')[0]]
+                                date = closest_date
 
-                if date in backtest_results.index:
-                    fig.add_trace(go.Scatter(
-                        x=[date],
-                        y=[backtest_results.loc[date, 'PortfolioValue']],
-                        mode='markers',
-                        marker=dict(color='purple', size=10, symbol='x'),
-                        name='Stop Loss' if not stop_loss_added else None,
-                        showlegend=not stop_loss_added,
-                        hovertemplate=f"Stop Loss: {date}<br>Price: ${trade['price']:.2f}<br>Size: {trade['size']:.2f}<br>Profit/Loss: ${trade['profit_loss']:.2f} ({trade['profit_loss_pct']:.2f}%)"
-                    ))
-                    stop_loss_added = True
+                            if date in backtest_results.index:
+                                fig.add_trace(go.Scatter(
+                                    x=[date],
+                                    y=[backtest_results.loc[date, 'PortfolioValue']],
+                                    mode='markers',
+                                    marker=dict(color='green', size=10, symbol='triangle-up'),
+                                    name='Buy' if not buy_added else None,
+                                    showlegend=not buy_added,
+                                    hovertemplate=f"Buy: {date}<br>Price: ${trade['price']:.2f}<br>Size: {trade['size']:.2f}"
+                                ))
+                                buy_added = True
 
-        # Improve the layout with better date formatting and hover information
-        fig.update_layout(
-            title='Portfolio Performance',
-            xaxis_title='Date',
-            yaxis_title='Portfolio Value ($)',
-            hovermode='x unified',
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            ),
-            xaxis=dict(
-                type='date',
-                tickformat='%Y-%m-%d',
-                tickangle=-45,
-                tickmode='auto',
-                nticks=20
+                        # Add sell markers
+                        for _, trade in sells.iterrows():
+                            date = trade['date']
+                            # Find the closest date in backtest_results.index if exact match not found
+                            if date not in backtest_results.index:
+                                closest_date = backtest_results.index[backtest_results.index.get_indexer([date], method='nearest')[0]]
+                                date = closest_date
+
+                            if date in backtest_results.index:
+                                fig.add_trace(go.Scatter(
+                                    x=[date],
+                                    y=[backtest_results.loc[date, 'PortfolioValue']],
+                                    mode='markers',
+                                    marker=dict(color='red', size=10, symbol='triangle-down'),
+                                    name='Sell' if not sell_added else None,
+                                    showlegend=not sell_added,
+                                    hovertemplate=f"Sell: {date}<br>Price: ${trade['price']:.2f}<br>Size: {trade['size']:.2f}<br>Profit/Loss: ${trade['profit_loss']:.2f} ({trade['profit_loss_pct']:.2f}%)"
+                                ))
+                                sell_added = True
+
+                        # Add stop loss markers
+                        for _, trade in stop_losses.iterrows():
+                            date = trade['date']
+                            # Find the closest date in backtest_results.index if exact match not found
+                            if date not in backtest_results.index:
+                                closest_date = backtest_results.index[backtest_results.index.get_indexer([date], method='nearest')[0]]
+                                date = closest_date
+
+                            if date in backtest_results.index:
+                                fig.add_trace(go.Scatter(
+                                    x=[date],
+                                    y=[backtest_results.loc[date, 'PortfolioValue']],
+                                    mode='markers',
+                                    marker=dict(color='purple', size=10, symbol='x'),
+                                    name='Stop Loss' if not stop_loss_added else None,
+                                    showlegend=not stop_loss_added,
+                                    hovertemplate=f"Stop Loss: {date}<br>Price: ${trade['price']:.2f}<br>Size: {trade['size']:.2f}<br>Profit/Loss: ${trade['profit_loss']:.2f} ({trade['profit_loss_pct']:.2f}%)"
+                                ))
+                                stop_loss_added = True
+                    except Exception as e:
+                        if debug_mode:
+                            st.error(f"Error displaying trade markers: {str(e)}")
+
+            # Improve the layout with better date formatting and hover information
+            fig.update_layout(
+                title='Portfolio Performance',
+                xaxis_title='Date',
+                yaxis_title='Portfolio Value ($)',
+                hovermode='x unified',
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                ),
+                xaxis=dict(
+                    type='date',
+                    tickformat='%Y-%m-%d',
+                    tickangle=-45,
+                    tickmode='auto',
+                    nticks=20
+                )
             )
-        )
 
-        # Add hover data
-        fig.update_traces(
-            hovertemplate='<b>Date</b>: %{x|%Y-%m-%d}<br><b>Value</b>: $%{y:.2f}<extra></extra>'
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Visualize drawdowns
-    st.subheader("Drawdowns")
-    if not backtest_results.empty and 'Drawdown' in backtest_results.columns:
-        fig = px.area(
-            backtest_results,
-            x=backtest_results.index,
-            y='Drawdown',
-            color_discrete_sequence=['red']
-        )
-        fig.update_layout(
-            title='Portfolio Drawdowns',
-            xaxis_title='Date',
-            yaxis_title='Drawdown (%)',
-            hovermode='x unified'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Show trade summary
-    if trades is not None and not trades.empty:
-        st.subheader("Trade Summary")
-
-        # Format the trades dataframe for display
-        display_trades = trades.copy()
-
-        # Add more calculated columns
-        if 'profit_loss' in display_trades.columns:
-            display_trades['profit_loss_color'] = display_trades['profit_loss'].apply(
-                lambda x: 'green' if x > 0 else 'red'
+            # Add hover data
+            fig.update_traces(
+                hovertemplate='<b>Date</b>: %{x|%Y-%m-%d}<br><b>Value</b>: $%{y:.2f}<extra></extra>'
             )
 
-        st.dataframe(display_trades)
+            st.plotly_chart(fig, use_container_width=True)
 
-        # Plot profit/loss distribution
-        if 'action' in trades.columns and 'profit_loss' in trades.columns:
-            profit_loss_data = trades[trades['action'].isin(['SELL', 'STOP_LOSS'])]['profit_loss']
-            if not profit_loss_data.empty:
-                st.subheader("Profit/Loss Distribution")
-                fig = px.histogram(
-                    profit_loss_data,
-                    nbins=20,
-                    color_discrete_sequence=['blue']
+            # Visualize drawdowns
+            st.subheader("Drawdowns")
+            if not backtest_results.empty and 'Drawdown' in backtest_results.columns:
+                fig = px.area(
+                    backtest_results,
+                    x=backtest_results.index,
+                    y='Drawdown',
+                    color_discrete_sequence=['red']
                 )
                 fig.update_layout(
-                    title='Trade Profit/Loss Distribution',
-                    xaxis_title='Profit/Loss ($)',
-                    yaxis_title='Number of Trades'
+                    title='Portfolio Drawdowns',
+                    xaxis_title='Date',
+                    yaxis_title='Drawdown (%)',
+                    hovermode='x unified'
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-    # Show detailed backtest data
-    with st.expander("Detailed Backtest Data", expanded=False):
-        st.dataframe(backtest_results)
+            # Show trade summary
+            if trades is not None and not trades.empty:
+                st.subheader("Trade Summary")
 
-    # Add ability to download backtest results
-    col1, col2 = st.columns(2)
-    with col1:
-        csv = backtest_results.to_csv()
-        st.download_button(
-            label="Download Backtest Results",
-            data=csv,
-            file_name="backtest_results.csv",
-            mime="text/csv",
-        )
+                # Format the trades dataframe for display
+                display_trades = trades.copy()
 
-    with col2:
-        if trades is not None and not trades.empty:
-            trades_csv = trades.to_csv()
-            st.download_button(
-                label="Download Trade History",
-                data=trades_csv,
-                file_name="trade_history.csv",
-                mime="text/csv",
-            )
+                # Add more calculated columns
+                if 'profit_loss' in display_trades.columns:
+                    display_trades['profit_loss_color'] = display_trades['profit_loss'].apply(
+                        lambda x: 'green' if x > 0 else 'red'
+                    )
 
-    return backtest_results
+                st.dataframe(display_trades)
+
+                # Plot profit/loss distribution
+                if 'action' in trades.columns and 'profit_loss' in trades.columns:
+                    profit_loss_data = trades[trades['action'].isin(['SELL', 'STOP_LOSS'])]['profit_loss']
+                    if not profit_loss_data.empty:
+                        st.subheader("Profit/Loss Distribution")
+                        fig = px.histogram(
+                            profit_loss_data,
+                            nbins=20,
+                            color_discrete_sequence=['blue']
+                        )
+                        fig.update_layout(
+                            title='Trade Profit/Loss Distribution',
+                            xaxis_title='Profit/Loss ($)',
+                            yaxis_title='Number of Trades'
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+            # Show detailed backtest data
+            with st.expander("Detailed Backtest Data", expanded=False):
+                st.dataframe(backtest_results)
+
+            # Add ability to download backtest results
+            col1, col2 = st.columns(2)
+            with col1:
+                csv = backtest_results.to_csv()
+                st.download_button(
+                    label="Download Backtest Results",
+                    data=csv,
+                    file_name="backtest_results.csv",
+                    mime="text/csv",
+                )
+
+            with col2:
+                if trades is not None and not trades.empty:
+                    trades_csv = trades.to_csv()
+                    st.download_button(
+                        label="Download Trade History",
+                        data=trades_csv,
+                        file_name="trade_history.csv",
+                        mime="text/csv",
+                    )
+
+            return backtest_results
+
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            st.error(f"Backtesting failed with error: {str(e)}")
+
+            # Provide more detailed error information in debug mode
+            if debug_mode:
+                st.expander("Detailed Error Information", expanded=True).code(error_details)
+
+                # Suggest possible solutions based on the error type
+                error_type = str(e).lower()
+                if 'profit_loss' in error_type:
+                    st.info("""
+                    The error is related to the profit_loss calculation. This might be caused by:
+                    1. No trades being executed during the backtesting period
+                    2. Issues with the data format in the trades record
+                    3. Missing profit_loss values for some trades
+
+                    Try adjusting your strategy parameters to ensure there are enough trading signals generated.
+                    """)
+                elif 'index' in error_type or 'key' in error_type:
+                    st.info("""
+                    The error is related to accessing an index or key that doesn't exist. This might be caused by:
+                    1. Missing or misaligned data in the test_chart_data
+                    2. Issues with date alignment between different data sources
+
+                    Check that your data contains all required columns ('Actual' and 'Predicted').
+                    """)
+                elif 'nan' in error_type or 'inf' in error_type:
+                    st.info("""
+                    The error is related to NaN (Not a Number) or infinite values. This might be caused by:
+                    1. Division by zero in calculations
+                    2. Missing values in the input data
+                    3. Extreme price movements causing numerical issues
+
+                    Check your data for missing values and ensure proper data preprocessing.
+                    """)
+
+            # Suggest general solutions
+            st.warning("""
+            Here are some steps to try solving the backtesting error:
+            1. Enable Debug Mode to see detailed information about signal generation
+            2. Try a different strategy type
+            3. Adjust the strategy parameters (try less extreme values)
+            4. Make sure your test data has proper 'Actual' and 'Predicted' columns
+            5. Try a different time period for backtesting
+            """)
+
+            return None
 
 
 def predict_future_prices(model, stock_data, close_scaler, model_params, device, num_days=30):
