@@ -19,6 +19,8 @@ from datetime import datetime, timedelta
 import dotenv
 from typing import List, Dict, Tuple, Any
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+import plotly.graph_objects as go
+import random
 
 # Import custom modules
 from model import TransformerModel, train_model, predict_future, count_parameters
@@ -1292,6 +1294,630 @@ def train_model_callback():
     st.session_state['model_trained'] = True
 
 
+def visualize_neural_network_3d(model):
+    """
+    Create a visually appealing 3D visualization of the transformer neural network model
+    with improved lighting and clarity.
+
+    Args:
+        model: The trained TransformerModel instance
+
+    Returns:
+        Plotly figure object with 3D visualization
+    """
+    try:
+        # Extract model architecture parameters
+        input_dim = model.input_dim
+        hidden_dim = model.hidden_dim
+        output_dim = model.output_dim
+        num_layers = model.transformer_encoder.num_layers
+        num_heads = model.num_heads
+
+        # Enhanced color palette using named CSS colors with good contrast
+        COLOR_PALETTE = {
+            'input': 'dodgerblue',     # Vibrant blue
+            'embedding': 'mediumseagreen',  # Clear green
+            'attention': 'darkorange',  # Vibrant orange
+            'ffn': 'mediumpurple',       # Distinct purple
+            'output': 'crimson',    # Rich red
+            'connections': 'slategray', # Medium gray for connections
+            'residual': 'gold'      # Gold for residual connections
+        }
+
+        # Initialize lists for node positions and connections
+        nodes_x, nodes_y, nodes_z = [], [], []
+        nodes_text, nodes_size, nodes_color = [], [], []
+        edge_x, edge_y, edge_z, edge_color = [], [], [], []
+
+        # Define a cleaner layer structure
+        layers = []
+
+        # Input layer
+        layers.append({
+            'name': 'Input',
+            'size': input_dim,
+            'color': COLOR_PALETTE['input'],
+            'node_size': 8
+        })
+
+        # Embedding layer
+        layers.append({
+            'name': 'Embedding',
+            'size': hidden_dim,
+            'color': COLOR_PALETTE['embedding'],
+            'node_size': 8
+        })
+
+        # Add transformer layers
+        for i in range(num_layers):
+            # Attention mechanism
+            layers.append({
+                'name': f'Attention {i+1}',
+                'size': hidden_dim,
+                'color': COLOR_PALETTE['attention'],
+                'node_size': 8
+            })
+
+            # Feed-forward network
+            layers.append({
+                'name': f'FFN {i+1}',
+                'size': hidden_dim,
+                'color': COLOR_PALETTE['ffn'],
+                'node_size': 8
+            })
+
+        # Output layer
+        layers.append({
+            'name': 'Output',
+            'size': output_dim,
+            'color': COLOR_PALETTE['output'],
+            'node_size': 10
+        })
+
+        # Layer positioning - use increased spacing for clarity
+        layer_spacing = 4.0
+        x_positions = [i * layer_spacing for i in range(len(layers))]
+
+        # Max nodes per layer - balance between detail and performance
+        max_nodes_per_layer = 25
+
+        # Store indices for safer connections
+        layer_start_indices = [0]
+
+        # Generate nodes for each layer
+        for layer_idx, layer in enumerate(layers):
+            layer_size = layer['size']
+            node_count = min(layer_size, max_nodes_per_layer)
+            skip = max(1, layer_size // node_count)
+            actual_nodes_added = 0
+
+            # Attention layers get special treatment
+            if 'Attention' in layer['name']:
+                # Create a visually interesting circular pattern
+                radius = 2.5
+                heads_to_show = min(num_heads, 4)
+                nodes_per_head = max(3, node_count // heads_to_show)
+
+                for head in range(heads_to_show):
+                    # Generate visually distinct colors for each attention head using HSL
+                    hue = (head / heads_to_show) * 360  # Full color range
+                    head_color = f'hsl({hue}, 80%, 60%)'  # Use HSL for better control
+
+                    # Create a circle of nodes for this attention head
+                    for j in range(nodes_per_head):
+                        if actual_nodes_added >= node_count:
+                            break
+
+                        # Calculate position on a circle
+                        angle = (j / nodes_per_head) * (2 * np.pi) + (head * np.pi / heads_to_show)
+                        y_pos = radius * np.sin(angle)
+                        z_pos = radius * np.cos(angle)
+
+                        # Add node
+                        nodes_x.append(x_positions[layer_idx])
+                        nodes_y.append(y_pos)
+                        nodes_z.append(z_pos)
+                        nodes_text.append(f"{layer['name']}<br>Head {head+1}, Node {j+1}")
+                        nodes_size.append(layer['node_size'])
+                        nodes_color.append(head_color)
+                        actual_nodes_added += 1
+
+            # Feed-forward network layers
+            elif 'FFN' in layer['name']:
+                # Create a 3D grid pattern
+                side_len = int(np.ceil(np.sqrt(node_count)))
+                spacing = 5.0 / side_len
+
+                # Use a gradient of purples for FFN nodes
+                base_hue = 270  # Purple
+
+                idx = 0
+                for i in range(side_len):
+                    for j in range(side_len):
+                        if actual_nodes_added >= node_count:
+                            break
+
+                        # Position in a grid
+                        y_pos = (i - side_len/2 + 0.5) * spacing
+                        z_pos = (j - side_len/2 + 0.5) * spacing
+
+                        # Vary lightness based on position
+                        lightness = 40 + 30 * (idx / (side_len * side_len))
+                        node_color = f'hsl({base_hue}, 70%, {lightness}%)'
+
+                        # Add node with slight random offset for more natural look
+                        nodes_x.append(x_positions[layer_idx])
+                        nodes_y.append(y_pos + np.random.normal(0, 0.05))
+                        nodes_z.append(z_pos + np.random.normal(0, 0.05))
+                        nodes_text.append(f"{layer['name']}<br>Node {actual_nodes_added+1}/{node_count}")
+                        nodes_size.append(layer['node_size'])
+                        nodes_color.append(node_color)
+                        actual_nodes_added += 1
+                        idx += 1
+
+            # Input, embedding and output layers
+            else:
+                # Arrange in a circular pattern
+                radius = 2.0
+
+                # Base color from the layer definition
+                base_color = layer['color']
+
+                for j in range(0, layer_size, skip):
+                    if actual_nodes_added >= node_count:
+                        break
+
+                    # Calculate angle
+                    angle = (j / layer_size) * 2 * np.pi
+                    y_pos = radius * np.sin(angle)
+                    z_pos = radius * np.cos(angle)
+
+                    # Add node
+                    nodes_x.append(x_positions[layer_idx])
+                    nodes_y.append(y_pos)
+                    nodes_z.append(z_pos)
+                    nodes_text.append(f"{layer['name']}<br>Node {j+1}/{layer_size}")
+                    nodes_size.append(layer['node_size'])
+                    nodes_color.append(base_color)
+                    actual_nodes_added += 1
+
+            # Record the start index of the next layer
+            layer_start_indices.append(len(nodes_x))
+
+        # Create connections between layers
+        for layer_idx in range(1, len(layers)):
+            current_layer_start = layer_start_indices[layer_idx]
+            current_layer_end = layer_start_indices[layer_idx + 1] if layer_idx + 1 < len(layer_start_indices) else len(nodes_x)
+            prev_layer_start = layer_start_indices[layer_idx - 1]
+            prev_layer_end = layer_start_indices[layer_idx]
+
+            # Get current and previous layer
+            current_layer = layers[layer_idx]
+            prev_layer = layers[layer_idx - 1]
+
+            # Number of connections to draw between layers
+            # Use a reduced set of connections to avoid visual clutter
+            connection_density = 0.3
+
+            # For each node in current layer
+            for i in range(current_layer_start, current_layer_end):
+                # Connect to nodes in previous layer based on density
+                for j in range(prev_layer_start, prev_layer_end):
+                    # Only create some connections based on density
+                    if np.random.rand() < connection_density:
+                        # Add edge (connection)
+                        edge_x.extend([nodes_x[i], nodes_x[j], None])
+                        edge_y.extend([nodes_y[i], nodes_y[j], None])
+                        edge_z.extend([nodes_z[i], nodes_z[j], None])
+
+                        # Create gradient connections that blend from source to target color
+                        if 'Attention' in current_layer['name']:
+                            # Use the node colors directly for attention heads - avoid None values
+                            edge_color.append(nodes_color[i])
+                            edge_color.append(nodes_color[j])
+                            # Need to repeat the last color instead of None for the break
+                            edge_color.append(nodes_color[j])
+                        else:
+                            # Set opacity for regular layer connections
+                            opacity = 0.7
+                            # For standard connections, use rgba format - avoid None values
+                            connection_color = f'rgba(100, 100, 100, {opacity})'
+                            edge_color.append(connection_color)
+                            edge_color.append(connection_color)
+                            edge_color.append(connection_color)
+
+            # Add residual connections for transformer layers
+            if layer_idx >= 3 and layer_idx % 2 == 0 and 'FFN' in current_layer['name']:
+                # Find the layer before the attention layer
+                skip_src_idx = layer_idx - 2
+                if skip_src_idx >= 0:
+                    # Connect a few sample nodes to show residual connection
+                    for _ in range(5):
+                        # Select random nodes from each layer
+                        src_node = random.randint(layer_start_indices[skip_src_idx], layer_start_indices[skip_src_idx+1]-1)
+                        tgt_node = random.randint(current_layer_start, current_layer_end-1)
+
+                        if src_node < len(nodes_x) and tgt_node < len(nodes_x):
+                            # Add skip connection
+                            edge_x.extend([nodes_x[src_node], nodes_x[tgt_node], None])
+                            edge_y.extend([nodes_y[src_node], nodes_y[tgt_node], None])
+                            edge_z.extend([nodes_z[src_node], nodes_z[tgt_node], None])
+
+                            # Use the residual color from palette - avoid None values
+                            residual_color = 'rgba(255, 215, 0, 0.8)'
+                            edge_color.append(residual_color)
+                            edge_color.append(residual_color)
+                            edge_color.append(residual_color)
+
+        # Create edges trace with improved styling
+        edges_trace = go.Scatter3d(
+            x=edge_x, y=edge_y, z=edge_z,
+            line=dict(color=edge_color, width=3),  # Increased line width for better visibility
+            hoverinfo='none',
+            mode='lines'
+        )
+
+        # Create nodes trace with improved styling and lighting
+        nodes_trace = go.Scatter3d(
+            x=nodes_x, y=nodes_y, z=nodes_z,
+            mode='markers',
+            hovertext=nodes_text,
+            hoverinfo='text',
+            marker=dict(
+                showscale=False,
+                color=nodes_color,
+                size=nodes_size,
+                opacity=0.95,  # Slightly increased opacity
+                line=dict(width=1.5, color='rgba(40,40,40,0.9)'),  # Darker, thicker outline for better visibility
+                symbol='circle'
+            )
+        )
+
+        # Create figure with proper lighting and camera settings
+        fig = go.Figure(data=[edges_trace, nodes_trace])
+
+        # Add layer labels
+        annotations = []
+        for i, layer in enumerate(layers):
+            annotations.append(
+                dict(
+                    x=x_positions[i],
+                    y=-5,
+                    z=0,
+                    text=layer['name'],
+                    showarrow=False,
+                    font=dict(
+                        color=layer['color'],
+                        size=12,
+                        family='Arial, sans-serif'
+                    )
+                )
+            )
+
+        # Update layout with improved settings
+        fig.update_layout(
+            title=dict(
+                text="Neural Network Architecture",
+                font=dict(size=24, family='Arial, sans-serif')
+            ),
+            scene=dict(
+                annotations=annotations,
+                xaxis=dict(
+                    title='',
+                    showticklabels=False,
+                    showgrid=False,
+                    zeroline=False,
+                    showline=False,
+                    showbackground=False  # Remove background
+                ),
+                yaxis=dict(
+                    title='',
+                    showticklabels=False,
+                    showgrid=False,
+                    zeroline=False,
+                    showline=False,
+                    showbackground=False  # Remove background
+                ),
+                zaxis=dict(
+                    title='',
+                    showticklabels=False,
+                    showgrid=False,
+                    zeroline=False,
+                    showline=False,
+                    showbackground=False  # Remove background
+                ),
+                aspectratio=dict(x=2, y=1, z=1),
+                camera=dict(
+                    eye=dict(x=1.5, y=1, z=1),  # Adjust viewing angle
+                    up=dict(x=0, y=0, z=1)      # Set "up" direction
+                ),
+                dragmode='orbit'
+            ),
+            margin=dict(l=0, r=0, b=0, t=50),
+            showlegend=False,
+            width=900,
+            height=650,
+            paper_bgcolor='rgba(250,250,250,0.95)',  # Very light gray background
+            plot_bgcolor='rgba(250,250,250,0.95)'
+        )
+
+        # Add elegant legend
+        layer_legend = "<br>".join([
+            f"<span style='color:{layer['color']}'><b>{layer['name']}</b></span>"
+            for layer in layers
+        ])
+
+        fig.add_annotation(
+            x=0.02,
+            y=0.98,
+            xref="paper",
+            yref="paper",
+            text=f"<b>Transformer Architecture</b><br><br>{layer_legend}<br><br><b>Model Details:</b><br>Input Dim: {input_dim}<br>Hidden Dim: {hidden_dim}<br>Output Dim: {output_dim}<br>Num Layers: {num_layers}<br>Num Heads: {num_heads}",
+            showarrow=False,
+            font=dict(size=12, family='Arial, sans-serif'),
+            bgcolor="rgba(255,255,255,0.9)",
+            bordercolor="rgba(0,0,0,0.3)",
+            borderwidth=1,
+            borderpad=8,
+            align="left"
+        )
+
+        return fig
+
+    except Exception as e:
+        # Create simple fallback visualization with error info
+        fig = go.Figure()
+        fig.add_annotation(
+            x=0.5, y=0.5,
+            xref="paper", yref="paper",
+            text=f"Error generating visualization: {str(e)}<br>Please try again with a smaller model.",
+            showarrow=False,
+            font=dict(size=14, color="crimson")
+        )
+        fig.update_layout(
+            title="Visualization Error",
+            width=900,
+            height=500
+        )
+        st.error(f"Visualization error: {str(e)}")
+        return fig
+
+def visualize_multi_head_attention(model):
+    """
+    Create a beautiful 3D visualization of the multi-head attention mechanism
+    with improved lighting and visual clarity.
+
+    Args:
+        model: The trained TransformerModel instance
+
+    Returns:
+        Plotly figure object with 3D visualization
+    """
+    try:
+        # Extract model parameters
+        hidden_dim = model.hidden_dim
+        num_heads = model.num_heads
+        head_dim = hidden_dim // num_heads
+
+        # Create figure
+        fig = go.Figure()
+
+        # Parameters
+        seq_length = 10
+        heads_to_show = min(num_heads, 4)
+
+        # Generate sample attention scores
+        np.random.seed(42)
+        attention_scores = np.zeros((heads_to_show, seq_length, seq_length))
+
+        # Create more interesting patterns for visualization
+        for h in range(heads_to_show):
+            # Generate different attention patterns for different heads
+            if h == 0:  # Diagonal attention (focusing on current token)
+                for i in range(seq_length):
+                    for j in range(seq_length):
+                        attention_scores[h, i, j] = np.exp(-0.5 * ((i-j)/2)**2)
+            elif h == 1:  # Looking ahead
+                for i in range(seq_length):
+                    for j in range(seq_length):
+                        if j >= i:
+                            attention_scores[h, i, j] = np.exp(-0.5 * ((j-i)/2)**2)
+            elif h == 2:  # Looking backward
+                for i in range(seq_length):
+                    for j in range(seq_length):
+                        if j <= i:
+                            attention_scores[h, i, j] = np.exp(-0.5 * ((i-j)/2)**2)
+            else:  # Global attention
+                for i in range(seq_length):
+                    peak1 = np.random.randint(0, seq_length)
+                    peak2 = np.random.randint(0, seq_length)
+                    for j in range(seq_length):
+                        attention_scores[h, i, j] = np.exp(-0.5 * min(((j-peak1)/1.5)**2, ((j-peak2)/1.5)**2))
+
+            # Normalize
+            attention_scores[h] = attention_scores[h] / attention_scores[h].sum(axis=1, keepdims=True)
+
+        # Enhanced color schemes for different heads using perceptually distinct colorscales
+        # Using named colorscales that provide good contrast and visual appeal
+        colors = ['Viridis', 'Plasma', 'Inferno', 'Magma']
+
+        # Create a 2×2 grid
+        grid_size = 2
+        spacing = 1.5
+
+        # For each attention head
+        for h in range(heads_to_show):
+            # Calculate grid position
+            grid_x = h % grid_size
+            grid_y = h // grid_size
+
+            # Generate x, y coordinates
+            x = np.arange(seq_length)
+            y = np.arange(seq_length)
+            x_grid, y_grid = np.meshgrid(x, y)
+
+            # Offset by grid position
+            x_offset = grid_x * (seq_length + spacing)
+            y_offset = grid_y * (seq_length + spacing)
+
+            # Create surface for this attention head with enhanced visual properties
+            fig.add_trace(go.Surface(
+                z=attention_scores[h],
+                x=x_grid + x_offset,
+                y=y_grid + y_offset,
+                colorscale=colors[h % len(colors)],
+                showscale=h == 0,  # Only show colorbar for first head
+                name=f'Head {h+1}',
+                contours_z=dict(
+                    show=True,
+                    usecolormap=True,
+                    highlightcolor="white",
+                    project_z=True
+                ),
+                lighting=dict(
+                    ambient=0.7,      # Increased ambient light for better visibility
+                    diffuse=0.9,      # Enhanced diffuse lighting for depth
+                    fresnel=0.2,      # Subtle edge highlighting
+                    roughness=0.3,    # Smoother surface appearance
+                    specular=1.0      # Enhanced specular highlights for "pop"
+                ),
+                opacity=0.95,
+                hoverinfo='text',
+                hovertext=[[f"Query: {i}, Key: {j}, Score: {attention_scores[h,i,j]:.3f}"
+                           for j in range(seq_length)]
+                           for i in range(seq_length)]
+            ))
+
+            # Add head label as a 3D text with enhanced visibility
+            fig.add_trace(go.Scatter3d(
+                x=[x_offset + seq_length/2],
+                y=[y_offset + seq_length/2],
+                z=[1.4],
+                mode='text',
+                text=[f'<b>Head {h+1}</b>'],  # Bold for better visibility
+                textfont=dict(size=16, color='black', family='Arial, sans-serif'),
+                showlegend=False
+            ))
+
+            # Add some connecting lines between key points to highlight attention flow
+            if h < heads_to_show:
+                # Find top 3 strongest attention points
+                flat_idx = np.argsort(attention_scores[h].flatten())[-4:]
+                top_points = [(idx // seq_length, idx % seq_length) for idx in flat_idx]
+
+                for i, j in top_points:
+                    # Add a line from query to its strongest key with enhanced visibility
+                    line_x = [x_offset + i, x_offset + j, None]
+                    line_y = [y_offset + j, y_offset + i, None]
+                    line_z = [attention_scores[h, i, j] * 1.1, 0.05, None]
+
+                    # HSL colors for better control and visibility
+                    hue = (h * 90) % 360  # Different hue for each head
+                    line_color = f'hsla({hue}, 100%, 80%, 0.9)'  # High saturation, bright, slight transparency
+
+                    fig.add_trace(go.Scatter3d(
+                        x=line_x, y=line_y, z=line_z,
+                        mode='lines',
+                        line=dict(width=5, color=line_color),  # Single color for the entire line
+                        showlegend=False
+                    ))
+
+        # Update layout with enhanced settings
+        fig.update_layout(
+            title=dict(
+                text="Multi-Head Attention Visualization",
+                font=dict(size=24, family='Arial, sans-serif')
+            ),
+            scene=dict(
+                xaxis=dict(
+                    title='Query Position',
+                    tickmode='array',
+                    tickvals=[i * seq_length + seq_length/2 for i in range(grid_size)],
+                    ticktext=[f'Head {i+1}' for i in range(grid_size)],
+                    showgrid=True,
+                    gridcolor='rgba(0,0,0,0.1)'
+                ),
+                yaxis=dict(
+                    title='Key Position',
+                    tickmode='array',
+                    tickvals=[i * seq_length + seq_length/2 for i in range(grid_size)],
+                    ticktext=[f'Head {i+grid_size+1}' for i in range(grid_size)],
+                    showgrid=True,
+                    gridcolor='rgba(0,0,0,0.1)'
+                ),
+                zaxis=dict(
+                    title='Attention Score',
+                    range=[0, 1.4],
+                    showgrid=True,
+                    gridcolor='rgba(0,0,0,0.1)'
+                ),
+                aspectratio=dict(x=1.8, y=1.8, z=1),
+                camera=dict(
+                    eye=dict(x=2, y=-1.5, z=1.5),  # Optimized viewing angle
+                    up=dict(x=0, y=0, z=1)
+                ),
+                dragmode='orbit'
+            ),
+            margin=dict(l=0, r=0, b=0, t=50),
+            width=900,
+            height=650,
+            paper_bgcolor='rgba(250,250,250,0.95)',
+            plot_bgcolor='rgba(250,250,250,0.95)'
+        )
+
+        # Add attention explanation with enhanced styling
+        patterns = [
+            "Diagonal focus (current token)",
+            "Forward attention (looking ahead)",
+            "Backward attention (looking behind)",
+            "Global attention (specific tokens)"
+        ]
+
+        explanation_text = "<b>Multi-Head Attention Patterns</b><br>"
+        for h in range(min(heads_to_show, len(patterns))):
+            # Use specific colors for each head in the explanation
+            hue = (h * 90) % 360
+            explanation_text += f"<br><span style='color:hsl({hue}, 80%, 40%)'><b>Head {h+1}:</b> {patterns[h]}</span>"
+
+        explanation_text += "<br><br><b>Explanation:</b><br>Higher peaks (lighter colors) indicate<br>stronger attention between positions.<br><br>"
+        explanation_text += f"<b>Model has {num_heads} attention heads</b><br>Each with dimension {head_dim}"
+
+        fig.add_annotation(
+            x=0.02,
+            y=0.98,
+            xref="paper",
+            yref="paper",
+            text=explanation_text,
+            showarrow=False,
+            font=dict(size=12, family='Arial, sans-serif'),
+            bgcolor="rgba(255,255,255,0.9)",
+            bordercolor="rgba(0,0,0,0.3)",
+            borderwidth=1,
+            borderpad=8,
+            align="left"
+        )
+
+        return fig
+
+    except Exception as e:
+        # Create a simple error visualization
+        fig = go.Figure()
+        fig.add_annotation(
+            x=0.5, y=0.5,
+            xref="paper", yref="paper",
+            text=f"Error generating multi-head attention visualization: {str(e)}",
+            showarrow=False,
+            font=dict(size=14, color="crimson")
+        )
+        fig.update_layout(
+            title="Visualization Error",
+            width=900,
+            height=500
+        )
+        st.error(f"Multi-head attention visualization error: {str(e)}")
+        return fig
+
+
 def main():
     """Main application function."""
     # Setup environment and get device
@@ -1493,6 +2119,57 @@ def main():
                 st.line_chart(loss_df)
 
                 st.success(f"Model trained successfully! Final training loss: {train_losses[-1]:.6f}, validation loss: {val_losses[-1]:.6f}")
+
+                # Add 3D visualization right after training loss display
+                with st.expander("3D Neural Network Visualization", expanded=True):
+                    st.subheader("Neural Network Architecture")
+
+                    # Create tabs for different visualizations
+                    viz_tab1, viz_tab2 = st.tabs(["Full Network Architecture", "Multi-Head Attention"])
+
+                    with viz_tab1:
+                        with st.spinner("Generating 3D neural network visualization..."):
+                            fig = visualize_neural_network_3d(model)
+                            st.plotly_chart(fig, use_container_width=True)
+
+                            st.info("""
+                            This 3D visualization shows the architecture of your transformer-based neural network:
+                            - **Blue nodes**: Input layer
+                            - **Green nodes**: Embedding layer
+                            - **Orange nodes**: Transformer encoder layers
+                            - **Red nodes**: Output layer
+
+                            The connections between nodes represent the information flow through the network.
+                            For transformer encoder layers, the visualization shows the multi-head attention mechanism,
+                            where each head processes different aspects of the input data.
+
+                            Note: For clarity, only a subset of nodes are shown for larger layers.
+                            """)
+
+                            # Add sliders to allow users to rotate and explore the 3D visualization
+                            st.write("You can rotate, zoom, and pan the visualization to explore different perspectives of the neural network.")
+
+                    with viz_tab2:
+                        with st.spinner("Generating multi-head attention visualization..."):
+                            attention_fig = visualize_multi_head_attention(model)
+                            st.plotly_chart(attention_fig, use_container_width=True)
+
+                            st.info("""
+                            This visualization focuses on the multi-head attention mechanism:
+
+                            **What is Multi-Head Attention?**
+                            - Instead of performing a single attention function, the transformer model performs multiple attention computations in parallel.
+                            - Each "head" can focus on different parts of the input sequence.
+                            - This allows the model to jointly attend to information from different representation subspaces.
+
+                            **How to interpret this visualization:**
+                            - Each surface represents one attention head
+                            - The height (z-axis) shows the attention weights
+                            - Higher values indicate stronger attention between positions
+                            - Different colors represent different attention heads
+
+                            The actual weights in a trained model would show which positions are most important for prediction.
+                            """)
 
                 # Save model state
                 model_state_dict = copy.deepcopy(model.state_dict())
