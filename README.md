@@ -1,71 +1,106 @@
-# Stock Price Prediction with Transformer Model
+# Stock Price Prediction with Transformer Neural Networks
 
-A Streamlit application that uses a Transformer neural network to predict stock prices and backtest trading strategies based on model predictions.
+A sophisticated Streamlit application that leverages state-of-the-art Transformer neural networks to predict stock prices and backtest trading strategies. This project combines technical analysis, sentiment analysis from financial news, and advanced deep learning to provide a comprehensive toolkit for stock analysis and trading strategy development.
 
-## Features
+![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.27+-green.svg)
 
-- **Stock Data Loading**: Load historical stock data from Yahoo Finance for any ticker symbol
-- **Technical Analysis**: Apply various technical indicators to enhance prediction accuracy
-- **News Sentiment Analysis**: Incorporate news sentiment for more comprehensive predictions (requires Alpaca API keys)
-- **Transformer Model**: State-of-the-art neural network architecture for time series forecasting
-- **Customizable Parameters**: Adjust model architecture, training parameters, and more
-- **Interactive Visualizations**: Visualize predictions, model performance, and backtest results
-- **Strategy Backtesting**: Test different trading strategies based on model predictions
+## 🌟 Key Features
 
-## Backtesting Features
+- **Multi-source Data Integration**:
 
-The application now includes a comprehensive backtesting system that allows you to:
+  - Historical stock price data from Yahoo Finance
+  - Real-time and historical news data with sentiment analysis (via Alpaca API)
+  - Technical indicators and volume data
 
-1. **Simulate Trading Strategies**:
+- **Advanced Transformer Model**:
 
-   - Trend Following: Trade based on predicted price movements
-   - Mean Reversion: Trade based on deviations from historical averages
-   - Buy and Hold: Simple buy and hold strategy for comparison
+  - Multi-head self-attention mechanism for capturing temporal dependencies
+  - Customizable model architecture (layers, heads, dimensions)
+  - Interactive model training with real-time loss visualization
+  - 3D neural network visualization and attention pattern exploration
 
-2. **Customize Backtesting Parameters**:
+- **Comprehensive Trading Module**:
 
-   - Initial capital
-   - Commission rates
-   - Strategy-specific parameters (thresholds, lookback periods, etc.)
+  - Multiple backtesting strategies (Trend Following, Mean Reversion, Combined)
+  - Risk management with position sizing, stop-loss, and drawdown limits
+  - Complete performance metrics and visualization
+  - Option for paper trading and live trading via Alpaca API
 
-3. **Performance Metrics**:
+- **Interactive User Experience**:
+  - Intuitive Streamlit interface with real-time model training
+  - Dynamic visualization of predictions and backtesting results
+  - Model saving and loading capabilities
+  - Customizable parameters for all aspects of the system
 
-   - Total return
-   - Sharpe ratio
-   - Maximum drawdown
-   - Win rate
-   - Comparison against buy & hold benchmark
+## 📊 Model Performance
 
-4. **Visualizations**:
-   - Portfolio value over time
-   - Drawdown analysis
-   - Detailed trade history
+The Transformer architecture offers several advantages for stock price prediction:
 
-## Model Performance
+- **Attention Mechanisms**: Captures long-range temporal dependencies without the limitations of RNNs
+- **Parallel Processing**: Faster training compared to sequential models
+- **Feature Importance**: Self-attention provides interpretable insights into which time periods influence predictions
+- **Adaptability**: Performs well across different market conditions and stock types
 
-The Transformer model shows promising results for stock price prediction:
+Performance metrics typically include:
 
-- Low training loss indicates good fit on historical data
-- Testing on out-of-sample data shows reasonable generalization
-- Model can capture both trend and some volatility patterns
-- Performance varies by stock and market conditions
+- Mean Absolute Error (MAE)
+- Root Mean Squared Error (RMSE)
+- Directional Accuracy (% of correct trend predictions)
+- Trading performance metrics (Sharpe Ratio, Max Drawdown, Returns)
 
-## Limitations and Considerations
+## 💹 Trading Strategies
 
-1. **Market Efficiency**: Markets are highly efficient, making consistent prediction challenging
-2. **Black Swan Events**: Unpredictable events can dramatically affect stock prices
-3. **Past ≠ Future**: Historical patterns don't guarantee future results
-4. **Risk Management**: Always employ proper risk management regardless of model predictions
+The application implements several trading strategies:
 
-## Getting Started
+### 1. Trend Following
 
-1. **Installation**:
+- Trades in the direction of predicted price movements
+- Customizable entry/exit thresholds
+- Risk management with dynamic position sizing
+
+### 2. Mean Reversion
+
+- Identifies potential price reversals based on deviations from historical norms
+- Adjustable lookback periods and standard deviation thresholds
+- Integrated with technical indicators
+
+### 3. Combined Strategy
+
+- Blends trend following and mean reversion approaches
+- Weighted signal generation for more balanced decision-making
+- Adaptive to different market conditions
+
+### 4. Buy and Hold
+
+- Simple benchmark strategy for comparison
+- Evaluates the effectiveness of active trading strategies
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- Python 3.9+
+- PyTorch 2.0+
+- CUDA-capable GPU recommended for faster training
+
+### Installation
+
+1. **Clone the repository**:
+
+   ```bash
+   git clone https://github.com/yourusername/transfomer_stocks.git
+   cd transfomer_stocks
+   ```
+
+2. **Install dependencies**:
 
    ```bash
    pip install -r requirements.txt
    ```
 
-2. **Setting up API Keys** (optional for news data):
+3. **Set up API keys** (for news data and live trading):
    Create a `.env` file with your Alpaca API keys:
 
    ```
@@ -73,80 +108,111 @@ The Transformer model shows promising results for stock price prediction:
    ALPACA_LIVE_SECRET=your_secret_here
    ```
 
-3. **Running the Application**:
-
+4. **Launch the application**:
    ```bash
    streamlit run main.py
    ```
 
-4. **Using the App**:
-   - Select a stock symbol and date range
-   - Choose technical indicators to include
-   - Adjust model parameters as needed
-   - Train the model and view predictions
-   - Backtest trading strategies
+## 🖥️ Using the Application
 
-## Disclaimer
+### Data Selection
 
-This application is for educational purposes only. The predictions and backtesting results should not be used as financial advice. Always consult with a qualified financial advisor before making investment decisions.
+1. Enter a stock symbol (default: AAPL)
+2. Select date range for training and testing
+3. Choose technical indicators to include in the model
+4. Toggle news sentiment analysis and volume data
 
-![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)
-![Streamlit](https://img.shields.io/badge/Streamlit-1.27+-green.svg)
+### Model Configuration
 
-![Application Screenshot](https://github.com/zachrizzo/transfomer_stocks/assets/placeholder/screenshot.png)
+1. Adjust model architecture (layers, heads, dimensions)
+2. Set training parameters (epochs, batch size, learning rate)
+3. Train the model and monitor loss in real-time
+4. Visualize model predictions on test data
 
-## Project Structure
+### Backtesting
 
-- `main.py`: Main application entry point and Streamlit interface
+1. Select a trading strategy
+2. Configure strategy parameters and risk management settings
+3. Run backtest and analyze performance
+4. Compare against benchmark strategies
+
+### Live/Paper Trading (with Alpaca API)
+
+1. Set up trading parameters and risk limits
+2. Enable trading mode (paper or live)
+3. Monitor trades and performance in real-time
+
+## 📁 Project Structure
+
+- `main.py`: Main Streamlit application and UI
 - `model.py`: Transformer model architecture and training logic
 - `data_utils.py`: Data loading, preprocessing, and feature engineering
 - `indicators.py`: Technical indicator calculations
-- `config.py`: Configuration and indicator definitions
-- `requirements.txt`: Required Python packages
+- `config.py`: Configuration settings and parameter definitions
+- `trading.py`: Trading strategies and backtesting engine
+- `live_trading.py`: Live and paper trading implementation
+- `pages/`: Additional Streamlit application pages
 
-## Model Architecture
+## 🔧 Technical Implementation
 
-This project uses a Transformer-based neural network, inspired by the architecture from the paper "Attention Is All You Need" by Vaswani et al. The model includes:
+### Model Architecture
 
-- Input embedding layer
-- Multi-head self-attention mechanism
-- Position-wise feed-forward networks
-- Layer normalization
-- Residual connections
+The Transformer model consists of:
 
-The Transformer architecture is particularly well-suited for time series forecasting as it can efficiently capture long-range dependencies in sequential data without the limitations of recurrent architectures.
+```
+TransformerModel
+├── Input Embedding Layer
+├── Positional Encoding
+├── Transformer Encoder Layers (configurable)
+│   ├── Multi-Head Self-Attention
+│   │   ├── Query, Key, Value Projections
+│   │   └── Attention Scaling and Softmax
+│   ├── Feed-Forward Network
+│   ├── Layer Normalization
+│   └── Residual Connections
+└── Output Layer
+```
 
-## Data Sources
+### Data Preprocessing Pipeline
 
-- Stock price data: Yahoo Finance API via the `yfinance` library
-- News data: Alpaca Market Data API
+1. Load historical price data
+2. Calculate technical indicators
+3. Fetch and process news sentiment (optional)
+4. Normalize features
+5. Create sequence data for training
+6. Split into training and validation sets
 
-## Customization
+### Trading Engine
 
-You can easily extend the application by:
+The trading engine simulates realistic market conditions:
 
-1. Adding new technical indicators in `indicators.py`
-2. Registering them in `config.py`
-3. Implementing new data preprocessing techniques in `data_utils.py`
-4. Modifying the Transformer architecture in `model.py`
+- Commission and slippage modeling
+- Position sizing based on available capital
+- Stop-loss implementation
+- Portfolio performance tracking
 
-## Performance Considerations
+## ⚠️ Limitations and Considerations
 
-- Model training time depends on the selected date range, number of indicators, and training parameters.
-- Using GPU acceleration (CUDA) or MPS (on Apple Silicon) significantly improves training speed.
-- Larger models (more layers/hidden size) may improve accuracy but require more computational resources.
+1. **Market Unpredictability**: Financial markets are influenced by countless factors, many of which cannot be captured in historical data
+2. **Data Limitations**: News sentiment analysis may not capture all market-relevant information
+3. **Model Complexity**: Transformer models require significant data and computational resources
+4. **Overfitting Risk**: Financial models can easily overfit to historical patterns that don't persist
+5. **Market Regimes**: Models trained in one market regime may perform poorly when conditions change
 
-## License
+## 📜 Disclaimer
+
+This application is provided for educational and research purposes only. The predictions and backtesting results should not be used as financial advice. Always consult with a qualified financial advisor before making investment decisions.
+
+## 📝 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Acknowledgements
+## 🙏 Acknowledgements
 
 - [PyTorch](https://pytorch.org/) for the deep learning framework
-- [Streamlit](https://streamlit.io/) for the web application framework
-- [Yahoo Finance](https://finance.yahoo.com/) for stock price data
-- [Alpaca](https://alpaca.markets/) for news data
+- [Streamlit](https://streamlit.io/) for the interactive web application framework
+- [Yahoo Finance](https://finance.yahoo.com/) for historical stock data
+- [Alpaca Markets](https://alpaca.markets/) for news data and trading API
 - [TextBlob](https://textblob.readthedocs.io/) for sentiment analysis
 
 ---
